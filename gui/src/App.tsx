@@ -4,8 +4,8 @@ import { FilePicker } from './components/FilePicker';
 import { PreviewTable, type FileItem } from './components/PreviewTable';
 import { MatchSelectionModal } from './components/MatchSelectionModal';
 import { SettingsPage } from './components/SettingsPage';
-import { scanDirectory, previewRename, getConfig, type FileCandidate } from './api';
-import { Loader2, Settings as SettingsIcon, Home, RefreshCw, FolderOpen, Play } from 'lucide-react';
+import { scanDirectory, previewRename, getConfig, undoLastOperation, getHistory, type FileCandidate } from './api';
+import { Loader2, Settings as SettingsIcon, Home, RefreshCw, FolderOpen, Play, RotateCcw } from 'lucide-react';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 
 function App() {
@@ -24,6 +24,9 @@ function App() {
   // Modal state
   const [selectedFileIndex, setSelectedFileIndex] = useState<number | null>(null);
 
+  // Undo visibility
+  const [hasHistory, setHasHistory] = useState(false);
+
   useEffect(() => {
     // Load default source
     getConfig().then(cfg => {
@@ -31,6 +34,9 @@ function App() {
         setDefaultSource(cfg.SOURCE_DIR);
       }
     }).catch(console.error);
+
+    // Check history
+    getHistory().then((hist: any[]) => setHasHistory(hist.length > 0));
 
     // Setup drag and drop
     const unlistenPromise = getCurrentWindow().listen('tauri://drag-drop', (event: any) => {
@@ -236,6 +242,9 @@ function App() {
         setLoading(false);
       }
 
+      // Update history state
+      setHasHistory(true);
+
     } catch (err: any) {
       setError("Failed to move files: " + err.message);
       setLoading(false);
@@ -285,6 +294,35 @@ function App() {
   const selectedFile = selectedFileIndex !== null ? files[selectedFileIndex] : null;
   const uncertainCount = files.filter(f => !f.confirmed && f.candidates.length > 1).length;
 
+  async function handleUndo() {
+    if (!confirm("Are you sure you want to undo the last batch of moves?")) return;
+
+    setLoading(true);
+    try {
+      const result = await undoLastOperation();
+      if (result.success) {
+        alert(`Undo Successful! Restored ${result.restored_count} files.`);
+        // Refresh if showing source
+        if (selectedPaths.length > 0) {
+          handleSelection(selectedPaths);
+        } else {
+          setFiles([]);
+          setLoading(false);
+        }
+
+        // Re-check info
+        getHistory().then((hist: any[]) => setHasHistory(hist.length > 0));
+
+      } else {
+        alert(`Undo Failed: ${result.message}`);
+        setLoading(false);
+      }
+    } catch (e: any) {
+      alert("Undo failed: " + e.message);
+      setLoading(false);
+    }
+  }
+
   return (
     <div className="h-screen w-full bg-gray-900 text-white font-sans flex overflow-hidden">
       {/* Drag Overlay */}
@@ -326,7 +364,16 @@ function App() {
           </button>
         </nav>
 
-        <div className="pt-6 border-t border-gray-800">
+        <div className="pt-6 border-t border-gray-800 space-y-4">
+          {hasHistory && (
+            <button
+              onClick={handleUndo}
+              className="w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium text-yellow-500 hover:bg-yellow-500/10 transition-colors"
+            >
+              <RotateCcw size={18} />
+              Undo Last Batch
+            </button>
+          )}
           <div className="flex items-center gap-2 text-xs text-gray-500 px-2">
             <span className="w-2 h-2 rounded-full bg-green-500"></span>
             API Connected

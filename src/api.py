@@ -8,10 +8,17 @@ from pydantic import BaseModel
 from pathlib import Path
 from typing import Optional, List, Dict, Any
 import asyncio
+import logging
 
 from src.scanner import scan_directory, VIDEO_EXTENSIONS, AUDIO_EXTENSIONS, BOOK_EXTENSIONS, ALL_EXTENSIONS
 from src.renamer import renamer
 from src.config import config, CONFIG_PATH
+from src.undo import undo_manager
+from src.logger import setup_logging
+
+# Initialize Logging
+setup_logging()
+logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Sortify API", version="1.0.0")
 
@@ -262,11 +269,17 @@ async def execute_moves(request: ExecuteRequest):
             filesystem.clean_empty_dirs(original.parent, root_path=source_root)
 
         except Exception as e:
+            logger.error(f"Error executing move for string {file_info.get('original_path')}: {e}", exc_info=True)
             errors.append({
                 "file": file_info.get('original_path'),
                 "error": str(e)
             })
             
+    # Record transaction for Undo
+    if moved:
+        undo_manager.record_batch(moved)
+        logger.info(f"Executed batch move of {len(moved)} files.")
+
     return {"moved": moved, "errors": errors}
     
 class PreviewRenameRequest(BaseModel):
@@ -299,6 +312,81 @@ async def preview_rename(request: PreviewRenameRequest):
         
     proposed_path = str(base_dir / new_relative)
     return {"proposed_path": proposed_path}
+
+@app.get("/history")
+async def get_history():
+    return undo_manager.get_history()
+
+@app.post("/undo")
+async def undo_last_operation():
+    logger.info("Undo requested by user.")
+    result = undo_manager.undo_last_batch()
+    if not result['success']:
+        logger.warning(f"Undo failed: {result.get('message')}")
+    else:
+        logger.info(f"Undo successful. Restored {result.get('restored_count')} files.")
+    return result
+
+    return result
+
+@app.get("/config")
+async def get_config(reveal_keys: bool = False):
+    """
+    Get current configuration.
+    reveal_keys: If True, returns actual usage API keys. If False, masks them.
+    (Local app, so strict masking is less critical but good practice for screenshots)
+    """
+    # Force reload from disk in case external changes happened
+    config._load_from_file()
+    
+    # We construct a dict of all properties we want to expose
+    # This matches the Settings interface in frontend
+    cfg = {
+        "TMDB_API_KEY": config.TMDB_API_KEY,
+        "DEST_DIR": str(config.DEST_DIR),
+        "MOVIE_DIR": str(config.MOVIE_DIR),
+        "TV_DIR": str(config.TV_DIR),
+        "BOOK_DIR": str(config.BOOK_DIR),
+        "AUDIOBOOK_DIR": str(config.AUDIOBOOK_DIR),
+        "SOURCE_DIR": str(config.SOURCE_DIR) if config.SOURCE_DIR else None,
+        "MIN_VIDEO_SIZE_MB": config.MIN_VIDEO_SIZE_MB,
+        "MOVIE_TEMPLATE": config.MOVIE_TEMPLATE,
+        "TV_TEMPLATE": config.TV_TEMPLATE,
+        "BOOK_TEMPLATE": config.BOOK_TEMPLATE,
+        "AUDIOBOOK_TEMPLATE": config.AUDIOBOOK_TEMPLATE,
+    }
+    
+    # Mask key if needed
+    if not reveal_keys and cfg["TMDB_API_KEY"]:
+        # Only show last 4 chars
+        key = cfg["TMDB_API_KEY"]
+        if len(key) > 4:
+            cfg["TMDB_API_KEY"] = "***" + key[-4:]
+            
+    return cfg
+
+@app.post("/config")
+async def update_config(update: ConfigUpdate):
+    """
+    Update a single configuration key.
+    """
+    try:
+        # Validate key (simple check)
+        valid_keys = [
+            "TMDB_API_KEY", "DEST_DIR", "MOVIE_DIR", "TV_DIR", 
+            "BOOK_DIR", "AUDIOBOOK_DIR", "SOURCE_DIR", "MIN_VIDEO_SIZE_MB",
+            "MOVIE_TEMPLATE", "TV_TEMPLATE", "BOOK_TEMPLATE", "AUDIOBOOK_TEMPLATE"
+        ]
+        
+        if update.key not in valid_keys:
+             raise HTTPException(status_code=400, detail=f"Invalid config key: {update.key}")
+
+        config.save(update.key, update.value)
+        logger.info(f"Config updated: {update.key} = {update.value}")
+        return {"success": True}
+    except Exception as e:
+        logger.error(f"Failed to update config: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 # ============== Run Server ==============
 

@@ -6,6 +6,13 @@ from pathlib import Path
 from src.scanner import scan_directory
 from src.renamer import renamer
 from src.config import config
+from src.undo import undo_manager
+from src.logger import setup_logging
+import logging
+
+# Setup Logging
+setup_logging()
+logger = logging.getLogger("renamer.cli")
 
 app = typer.Typer(
     name="renamer",
@@ -29,6 +36,8 @@ async def run_scan(path: Path, dry_run: bool, interactive: bool, min_size: int):
     table.add_column("Type", style="magenta")
 
     files_found = 0
+    
+    moved_files = []
     
     for file_path in scan_directory(path, min_video_size_mb=float(min_size)):
         files_found += 1
@@ -74,6 +83,8 @@ async def run_scan(path: Path, dry_run: bool, interactive: bool, min_size: int):
             import shutil
             shutil.move(str(file_path), str(target_path))
             console.print(f"[green]Moved:[/green] {file_path.name} → {target_path}")
+            
+            moved_files.append({"src": str(file_path), "dest": str(target_path)})
 
     console.print(table)
     
@@ -83,6 +94,10 @@ async def run_scan(path: Path, dry_run: bool, interactive: bool, min_size: int):
     if dry_run:
         console.print("\n[bold yellow]DRY RUN[/bold yellow]: No files were moved. Use --execute to apply changes.")
     else:
+        if moved_files:
+            undo_manager.record_batch(moved_files)
+            console.print(f"[dim]Recorded {len(moved_files)} moves for undo.[/dim]")
+            
         console.print("\n[bold green]SUCCESS[/bold green]: Files processed.")
 
 @app.command()
@@ -115,6 +130,23 @@ def scan(
         raise typer.Exit(code=1)
     
     asyncio.run(run_scan(scan_path, dry_run, interactive, min_size))
+
+@app.command()
+def undo():
+    """
+    Undo the last batch of operations.
+    """
+    console.print("[bold yellow]Attempting to undo last batch...[/bold yellow]")
+    result = undo_manager.undo_last_batch()
+    
+    if result['success']:
+        console.print(f"[green]Success![/green] Restored {result['restored_count']} files.")
+        if result['failures']:
+            console.print(f"[red]Generated {len(result['failures'])} errors during undo.[/red]")
+            for f in result['failures']:
+                console.print(f" - {f}")
+    else:
+        console.print(f"[red]Undo Failed:[/red] {result['message']}")
 
 if __name__ == "__main__":
     app()

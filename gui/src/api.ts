@@ -104,3 +104,12 @@ export async function previewRename(original_path: string, selected_candidate: F
     const data = await res.json();
     return data.proposed_path;
 }
+
+export async function undoLastOperation(): Promise<{ success: boolean; message?: string; restored_count?: number }> {
+    const res = await fetch(`${API_BASE}/undo`, {
+        method: 'POST'
+    });
+
+    // Always return json even if error status, as our API returns details
+    return res.json();
+}
