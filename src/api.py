@@ -139,7 +139,7 @@ async def scan_files(request: ScanRequest):
     
     for file_path in scan_directory(scan_path, min_video_size_mb=float(request.min_size_mb)):
         # Parse filename
-        metadata = renamer.parse_filename(file_path.name)
+        metadata = renamer.parse_filename(file_path)
         
         # Get candidates from API
         candidates_raw = await renamer.get_candidates(metadata)
@@ -221,7 +221,7 @@ async def execute_moves(request: ExecuteRequest):
             original = Path(file_info['original_path'])
             
             # Rebuild metadata from selected candidate
-            metadata = renamer.parse_filename(original.name)
+            metadata = renamer.parse_filename(original)
             if file_info.get('selected_candidate'):
                 metadata.update(file_info['selected_candidate'])
             
@@ -255,6 +255,8 @@ async def execute_moves(request: ExecuteRequest):
                 "file": file_info.get('original_path'),
                 "error": str(e)
             })
+            
+    return {"moved": moved, "errors": errors}
     
 class PreviewRenameRequest(BaseModel):
     original_path: str
@@ -265,7 +267,7 @@ async def preview_rename(request: PreviewRenameRequest):
     original = Path(request.original_path)
     
     # Rebuild metadata
-    metadata = renamer.parse_filename(original.name)
+    metadata = renamer.parse_filename(original)
     if request.selected_candidate:
         metadata.update(request.selected_candidate)
         

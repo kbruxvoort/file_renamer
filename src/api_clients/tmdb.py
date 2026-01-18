@@ -39,5 +39,20 @@ class TMDBClient:
             response.raise_for_status()
             return response.json()
 
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
+    async def get_episode_details(self, tv_id: int, season_number: int, episode_number: int) -> Dict[str, Any]:
+        async with httpx.AsyncClient() as client:
+            params = self.params.copy()
+            url = f"{self.BASE_URL}/tv/{tv_id}/season/{season_number}/episode/{episode_number}"
+            
+            response = await client.get(url, params=params)
+            # 404 means episode not found (e.g. S01E99), just return empty dict or raise?
+            # raising allows retry logic to fail, but here 404 is likely permanent.
+            if response.status_code == 404:
+                return {}
+            
+            response.raise_for_status()
+            return response.json()
+
 # Global instance
 tmdb_client = TMDBClient()
