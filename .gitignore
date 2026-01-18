@@ -29,6 +29,10 @@ target/
 # Binaries
 gui/src-tauri/binaries/
 
+
 # Secrets
 gui/.tauri_secret_key
 gui/~
+
+# Test Fixtures
+tests/fixtures/Downloads/
