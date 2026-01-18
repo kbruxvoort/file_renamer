@@ -390,9 +390,21 @@ async def update_config(update: ConfigUpdate):
 
 # ============== Run Server ==============
 
-def start_server(port: int = 8742):
+def start_server():
     """Start the API server (called by Tauri)"""
     import uvicorn
+    import argparse
+    import sys
+
+    parser = argparse.ArgumentParser(description="Sortify API Server")
+    parser.add_argument("--port", type=int, default=8742, help="Port to bind to")
+    
+    # Check if we are being called correctly
+    args, unknown = parser.parse_known_args()
+    
+    port = args.port
+    # If standard execution (e.g. from CLI without args), might default to 8742 which is fine.
+
     uvicorn.run(app, host="127.0.0.1", port=port, log_level="warning")
 
 if __name__ == "__main__":

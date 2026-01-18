@@ -5,6 +5,8 @@ build/
 dist/
 wheels/
 *.egg-info
+renamer-api.spec
+.coverage
 
 # Virtual environments
 .venv
@@ -23,3 +25,10 @@ npm-debug.log
 gui/src-tauri/target/
 gui/dist/
 target/
+
+# Binaries
+gui/src-tauri/binaries/
+
+# Secrets
+gui/.tauri_secret_key
+gui/~

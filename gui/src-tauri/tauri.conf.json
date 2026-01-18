@@ -2,7 +2,7 @@
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "Sortify",
   "version": "0.1.0",
-  "identifier": "com.tauri.dev",
+  "identifier": "com.renamer.app",
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://localhost:5173",
@@ -22,7 +22,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self' 'unsafe-inline' 'unsafe-eval' http://127.0.0.1:8742 ws://localhost:5173; img-src 'self' https://image.tmdb.org https://books.google.com data: asset: match-poster:;"
+      "csp": "default-src 'self' 'unsafe-inline' 'unsafe-eval' http://127.0.0.1:* ws://localhost:5173; img-src 'self' https://image.tmdb.org https://books.google.com data: asset: match-poster:;"
     }
   },
   "bundle": {
@@ -34,6 +34,19 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
+    ],
+    "externalBin": [
+      "binaries/renamer-api"
     ]
+  },
+  "plugins": {
+    "updater": {
+      "active": true,
+      "endpoints": [
+        "https://github.com/kbruxvoort/file-renamer/releases/latest/download/latest.json"
+      ],
+      "dialog": true,
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEE2NEIxOEY4NjlGOTAzOTUKUldTVkEvbHArQmhMcGlRRUVlWldaZjAwNDRhcHBTdTBCRTRUNXB3QytnZVZrRHAvU1M3WkFxeDgK"
+    }
   }
 }

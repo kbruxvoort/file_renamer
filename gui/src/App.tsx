@@ -20,6 +20,7 @@ function App() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [isDragging, setIsDragging] = useState(false);
+  const [hasScanned, setHasScanned] = useState(false);
 
   // Modal state
   const [selectedFileIndex, setSelectedFileIndex] = useState<number | null>(null);
@@ -27,16 +28,23 @@ function App() {
   // Undo visibility
   const [hasHistory, setHasHistory] = useState(false);
 
-  useEffect(() => {
-    // Load default source
+  // Load config helper
+  const loadConfig = () => {
     getConfig().then(cfg => {
       if (cfg.SOURCE_DIR) {
         setDefaultSource(cfg.SOURCE_DIR);
+      } else {
+        setDefaultSource(null);
       }
     }).catch(console.error);
 
     // Check history
     getHistory().then((hist: any[]) => setHasHistory(hist.length > 0));
+  };
+
+  // Initial load
+  useEffect(() => {
+    loadConfig();
 
     // Setup drag and drop
     const unlistenPromise = getCurrentWindow().listen('tauri://drag-drop', (event: any) => {
@@ -57,6 +65,13 @@ function App() {
     };
   }, []);
 
+  // Reload config when switching back to scanner
+  useEffect(() => {
+    if (view === 'scanner') {
+      loadConfig();
+    }
+  }, [view]);
+
   async function handleSelection(paths: string[]) {
     if (paths.length === 0) return;
 
@@ -72,6 +87,7 @@ function App() {
     setLoading(true);
     setError(null);
     setFiles([]);
+    setHasScanned(false);
 
     try {
       const result = await scanDirectory(paths);
@@ -84,6 +100,7 @@ function App() {
         proposed_path: f.proposed_path || null
       }));
       setFiles(uiFiles);
+      setHasScanned(true);
     } catch (err: any) {
       setError(err.message);
     } finally {
@@ -389,7 +406,7 @@ function App() {
           <div className="space-y-8 animate-fade-in max-w-6xl mx-auto">
 
             {/* Initial Empty State / Scanner controls */}
-            {!loading && files.length === 0 && !error && (
+            {!loading && !hasScanned && !error && (
               <div className="flex flex-col items-center justify-center py-20 bg-gray-800/30 border border-gray-700/50 rounded-3xl border-dashed">
                 <div className="bg-gray-800 p-4 rounded-full mb-6">
                   <FolderOpen size={48} className="text-blue-400" />
@@ -443,6 +460,29 @@ function App() {
               </div>
             )}
 
+            {/* No Files Found State */}
+            {!loading && hasScanned && files.length === 0 && !error && (
+              <div className="flex flex-col items-center justify-center py-20 bg-gray-800/30 border border-gray-700/50 rounded-3xl border-dashed">
+                <div className="bg-gray-800 p-4 rounded-full mb-6">
+                  <FolderOpen size={48} className="text-gray-500" />
+                </div>
+                <h2 className="text-2xl font-bold text-white mb-2">No Files Found</h2>
+                <p className="text-gray-400 mb-8 text-center max-w-md">
+                  We couldn't find any media files to reorganize in the selected location.
+                </p>
+                <button
+                  onClick={() => {
+                    setHasScanned(false);
+                    setSourcePath(null);
+                    setSelectedPaths([]);
+                  }}
+                  className="px-6 py-3 bg-gray-700 hover:bg-gray-600 text-white rounded-xl font-medium transition-colors"
+                >
+                  Go Back
+                </button>
+              </div>
+            )}
+
             {/* Error State */}
             {error && (
               <div className="p-4 rounded-lg bg-red-900/20 border border-red-800 text-red-200 flex justify-between items-center">
@@ -489,6 +529,7 @@ function App() {
                         setFiles([]);
                         setSourcePath(null);
                         setSelectedPaths([]);
+                        setHasScanned(false);
                       }}
                       className="p-2 text-gray-400 hover:text-white hover:bg-gray-700 rounded-lg transition-colors"
                       title="Close"

@@ -25,7 +25,21 @@ export interface ScanResponse {
     dest_dir: string;
 }
 
-const API_BASE = "http://127.0.0.1:8742";
+import { invoke } from "@tauri-apps/api/core";
+
+let apiBaseUrl: string | null = null;
+
+async function getApiBase(): Promise<string> {
+    if (apiBaseUrl) return apiBaseUrl;
+    try {
+        const port = await invoke<number>("get_api_port");
+        apiBaseUrl = `http://127.0.0.1:${port}`;
+    } catch (e) {
+        console.warn("Failed to get dynamic port, falling back to default:", e);
+        apiBaseUrl = "http://127.0.0.1:8742";
+    }
+    return apiBaseUrl;
+}
 
 export async function scanDirectory(paths: string | string[] | null): Promise<ScanResponse> {
     const payload: any = { min_size_mb: 0 };
@@ -36,7 +50,8 @@ export async function scanDirectory(paths: string | string[] | null): Promise<Sc
         payload.path = paths; // or payload.paths = [paths]
     }
 
-    const res = await fetch(`${API_BASE}/scan`, {
+    const baseUrl = await getApiBase();
+    const res = await fetch(`${baseUrl}/scan`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
@@ -51,7 +66,8 @@ export async function scanDirectory(paths: string | string[] | null): Promise<Sc
 }
 
 export async function manualSearch(query: string, type: string): Promise<FileCandidate[]> {
-    const res = await fetch(`${API_BASE}/search`, {
+    const baseUrl = await getApiBase();
+    const res = await fetch(`${baseUrl}/search`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ query, type })
@@ -73,7 +89,8 @@ export interface ExecuteResult {
 }
 
 export async function executeMoves(payload: { files: any[] }): Promise<ExecuteResult> {
-    const res = await fetch(`${API_BASE}/execute`, {
+    const baseUrl = await getApiBase();
+    const res = await fetch(`${baseUrl}/execute`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
@@ -88,13 +105,15 @@ export async function executeMoves(payload: { files: any[] }): Promise<ExecuteRe
 }
 
 export async function getConfig(): Promise<any> {
-    const res = await fetch(`${API_BASE}/config`);
+    const baseUrl = await getApiBase();
+    const res = await fetch(`${baseUrl}/config`);
     if (!res.ok) throw new Error("Failed to load config");
     return res.json();
 }
 
 export async function previewRename(original_path: string, selected_candidate: FileCandidate): Promise<string> {
-    const res = await fetch(`${API_BASE}/preview_rename`, {
+    const baseUrl = await getApiBase();
+    const res = await fetch(`${baseUrl}/preview_rename`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ original_path, selected_candidate })
@@ -106,10 +125,17 @@ export async function previewRename(original_path: string, selected_candidate: F
 }
 
 export async function undoLastOperation(): Promise<{ success: boolean; message?: string; restored_count?: number }> {
-    const res = await fetch(`${API_BASE}/undo`, {
+    const baseUrl = await getApiBase();
+    const res = await fetch(`${baseUrl}/undo`, {
         method: 'POST'
     });
 
-    // Always return json even if error status, as our API returns details
+    return res.json();
+}
+
+export async function getHistory(): Promise<any[]> {
+    const baseUrl = await getApiBase();
+    const res = await fetch(`${baseUrl}/history`);
+    if (!res.ok) return [];
     return res.json();
 }
