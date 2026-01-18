@@ -100,6 +100,12 @@ export function SettingsPage() {
         }
     }
 
+    // current preset helpers
+    const getPresetValue = (template: string, type: 'movies' | 'tv' | 'books') => {
+        const found = PRESETS[type].find(p => p.value === template);
+        return found ? found.value : "custom";
+    };
+
     if (loading) return <div className="p-8 text-center text-gray-500">Loading settings...</div>;
     if (!settings) return <div className="p-8 text-center text-red-400">Error loading settings</div>;
 
@@ -218,10 +224,13 @@ export function SettingsPage() {
                             <label className="block text-sm font-medium text-gray-300">Movies</label>
                             <select
                                 className="bg-gray-900 text-xs text-gray-400 border border-gray-700 rounded px-2 py-1 outline-none focus:border-blue-500"
-                                onChange={(e) => e.target.value && updateSetting('MOVIE_TEMPLATE', e.target.value)}
-                                value=""
+                                onChange={(e) => {
+                                    const val = e.target.value;
+                                    if (val !== 'custom') updateSetting('MOVIE_TEMPLATE', val);
+                                }}
+                                value={getPresetValue(settings.MOVIE_TEMPLATE, 'movies')}
                             >
-                                <option value="">Quick Presets...</option>
+                                <option value="custom" disabled>Custom</option>
                                 {PRESETS.movies.map((p, i) => (
                                     <option key={i} value={p.value}>{p.name}</option>
                                 ))}
@@ -242,10 +251,13 @@ export function SettingsPage() {
                             <label className="block text-sm font-medium text-gray-300">TV Shows</label>
                             <select
                                 className="bg-gray-900 text-xs text-gray-400 border border-gray-700 rounded px-2 py-1 outline-none focus:border-blue-500"
-                                onChange={(e) => e.target.value && updateSetting('TV_TEMPLATE', e.target.value)}
-                                value=""
+                                onChange={(e) => {
+                                    const val = e.target.value;
+                                    if (val !== 'custom') updateSetting('TV_TEMPLATE', val);
+                                }}
+                                value={getPresetValue(settings.TV_TEMPLATE, 'tv')}
                             >
-                                <option value="">Quick Presets...</option>
+                                <option value="custom" disabled>Custom</option>
                                 {PRESETS.tv.map((p, i) => (
                                     <option key={i} value={p.value}>{p.name}</option>
                                 ))}
@@ -266,10 +278,13 @@ export function SettingsPage() {
                             <label className="block text-sm font-medium text-gray-300">Books (Ebooks)</label>
                             <select
                                 className="bg-gray-900 text-xs text-gray-400 border border-gray-700 rounded px-2 py-1 outline-none focus:border-blue-500"
-                                onChange={(e) => e.target.value && updateSetting('BOOK_TEMPLATE', e.target.value)}
-                                value=""
+                                onChange={(e) => {
+                                    const val = e.target.value;
+                                    if (val !== 'custom') updateSetting('BOOK_TEMPLATE', val);
+                                }}
+                                value={getPresetValue(settings.BOOK_TEMPLATE, 'books')}
                             >
-                                <option value="">Quick Presets...</option>
+                                <option value="custom" disabled>Custom</option>
                                 {PRESETS.books.map((p, i) => (
                                     <option key={i} value={p.value}>{p.name}</option>
                                 ))}
@@ -290,10 +305,13 @@ export function SettingsPage() {
                             <label className="block text-sm font-medium text-gray-300">Audiobooks</label>
                             <select
                                 className="bg-gray-900 text-xs text-gray-400 border border-gray-700 rounded px-2 py-1 outline-none focus:border-blue-500"
-                                onChange={(e) => e.target.value && updateSetting('AUDIOBOOK_TEMPLATE', e.target.value)}
-                                value=""
+                                onChange={(e) => {
+                                    const val = e.target.value;
+                                    if (val !== 'custom') updateSetting('AUDIOBOOK_TEMPLATE', val);
+                                }}
+                                value={getPresetValue(settings.AUDIOBOOK_TEMPLATE, 'books')}
                             >
-                                <option value="">Quick Presets...</option>
+                                <option value="custom" disabled>Custom</option>
                                 {PRESETS.books.map((p, i) => (
                                     <option key={i} value={p.value}>{p.name}</option>
                                 ))}

@@ -7,9 +7,10 @@ interface FilePickerProps {
     currentPath: string | null;
     onPathSelect: (path: string) => void;
     className?: string;
+    customButton?: React.ReactNode;
 }
 
-export function FilePicker({ currentPath, onPathSelect, className }: FilePickerProps) {
+export function FilePicker({ currentPath, onPathSelect, className, customButton }: FilePickerProps) {
 
     async function handleBrowse() {
         try {
@@ -25,6 +26,14 @@ export function FilePicker({ currentPath, onPathSelect, className }: FilePickerP
         } catch (err) {
             console.error("Failed to open dialog:", err);
         }
+    }
+
+    if (customButton) {
+        return (
+            <div onClick={handleBrowse} className={className}>
+                {customButton}
+            </div>
+        );
     }
 
     return (

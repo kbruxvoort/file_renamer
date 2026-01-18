@@ -1,23 +1,56 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { clsx } from 'clsx';
 import { FilePicker } from './components/FilePicker';
 import { PreviewTable, type FileItem } from './components/PreviewTable';
 import { MatchSelectionModal } from './components/MatchSelectionModal';
 import { SettingsPage } from './components/SettingsPage';
-import { scanDirectory, previewRename, type FileCandidate } from './api';
-import { Loader2, Settings as SettingsIcon, Home, RefreshCw } from 'lucide-react';
+import { scanDirectory, previewRename, getConfig, type FileCandidate } from './api';
+import { Loader2, Settings as SettingsIcon, Home, RefreshCw, FolderOpen, Play } from 'lucide-react';
+import { getCurrentWindow } from '@tauri-apps/api/window'; // For drag and drop if needed, but web API might suffice or listen to tauri event
 
 function App() {
   // Navigation
   const [view, setView] = useState<'scanner' | 'settings'>('scanner');
 
   const [sourcePath, setSourcePath] = useState<string | null>(null);
+  const [defaultSource, setDefaultSource] = useState<string | null>(null);
   const [files, setFiles] = useState<FileItem[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [isDragging, setIsDragging] = useState(false);
 
   // Modal state
   const [selectedFileIndex, setSelectedFileIndex] = useState<number | null>(null);
+
+  useEffect(() => {
+    // Load default source
+    getConfig().then(cfg => {
+      if (cfg.SOURCE_DIR) {
+        setDefaultSource(cfg.SOURCE_DIR);
+      }
+    }).catch(console.error);
+
+    // Setup drag and drop
+    const unlistenPromise = getCurrentWindow().listen('tauri://drag-drop', (event: any) => {
+      // payload is { paths: string[], position: { x, y } }
+      if (event.payload?.paths?.length > 0) {
+        // Just take the first dropped item as the directory or file
+        // Ideally we should check if it's a directory. Backend scan handles file or dir.
+        // But scanDirectory expects a path string.
+        handlePathSelect(event.payload.paths[0]);
+      }
+      setIsDragging(false);
+    });
+
+    const unlistenEnter = getCurrentWindow().listen('tauri://drag-enter', () => setIsDragging(true));
+    const unlistenLeave = getCurrentWindow().listen('tauri://drag-leave', () => setIsDragging(false));
+
+    return () => {
+      unlistenPromise.then(unlisten => unlisten());
+      unlistenEnter.then(unlisten => unlisten());
+      unlistenLeave.then(unlisten => unlisten());
+    };
+  }, []);
 
   async function handlePathSelect(path: string) {
     setSourcePath(path);
@@ -47,6 +80,8 @@ function App() {
     setSelectedFileIndex(index);
   }
 
+  const [isReviewMode, setIsReviewMode] = useState(false);
+
   async function handleCandidateSelect(candidateIndex: number) {
     if (selectedFileIndex === null) return;
 
@@ -56,6 +91,7 @@ function App() {
       return {
         ...file,
         selected_index: candidateIndex,
+        // confirmed: true, // Moved to handleConfirmSelection
         // Keep old proposed path momentarily or set to loading...
       };
     }));
@@ -77,17 +113,84 @@ function App() {
     }
   }
 
-  function handleCandidatesUpdate(newCandidates: FileCandidate[]) {
+  function handleConfirmSelection() {
     if (selectedFileIndex === null) return;
 
-    setFiles(prev => prev.map((file, idx) => {
-      if (idx !== selectedFileIndex) return file;
+    // Mark current as confirmed
+    setFiles(prev => prev.map((f, idx) => {
+      if (idx !== selectedFileIndex) return f;
+      return { ...f, confirmed: true };
+    }));
+
+    // If in review mode, find next uncertain item
+    if (isReviewMode) {
+      // Find next uncertain index STARTING AFTER current index
+      const nextUncertain = files.findIndex((f, idx) =>
+        idx > selectedFileIndex && !f.confirmed && f.candidates.length > 1
+      );
+
+      if (nextUncertain !== -1) {
+        setSelectedFileIndex(nextUncertain);
+      } else {
+        // No more items after this one. Check from beginning just in case?
+        // Or just end review.
+        const anyUncertain = files.findIndex(f => !f.confirmed && f.candidates.length > 1);
+        if (anyUncertain !== -1 && anyUncertain !== selectedFileIndex) {
+          setSelectedFileIndex(anyUncertain);
+        } else {
+          setIsReviewMode(false);
+          setSelectedFileIndex(null);
+          alert("Review complete!");
+        }
+      }
+    } else {
+      // Normal mode: just close
+      setSelectedFileIndex(null);
+    }
+  }
+
+  async function handleCandidatesUpdate(newCandidates: FileCandidate[]) {
+    if (selectedFileIndex === null) return;
+
+    // Get the file to update
+    const file = files[selectedFileIndex];
+    let newPath = file.proposed_path;
+
+    // If we have candidates, fetch a preview for the first one immediately
+    if (newCandidates.length > 0) {
+      try {
+        newPath = await previewRename(file.original_path, newCandidates[0]);
+      } catch (e) {
+        console.error("Failed to preview new candidate", e);
+      }
+    }
+
+    setFiles(prev => prev.map((f, idx) => {
+      if (idx !== selectedFileIndex) return f;
       return {
-        ...file,
+        ...f,
         candidates: newCandidates,
-        selected_index: 0 // Reset selection to first new candidate
+        selected_index: 0,
+        confirmed: true,
+        proposed_path: newPath
       };
     }));
+  }
+
+  function handleReviewUncertain() {
+    // Start review mode
+    setIsReviewMode(true);
+
+    const nextUncertain = files.findIndex((f) =>
+      !f.confirmed && f.candidates.length > 1
+    );
+
+    if (nextUncertain !== -1) {
+      setSelectedFileIndex(nextUncertain);
+    } else {
+      alert("No uncertain matches to review!");
+      setIsReviewMode(false);
+    }
   }
 
   function handleRemoveFile(index: number) {
@@ -116,7 +219,7 @@ function App() {
       alert(`Moved ${result.moved.length} files. ${result.errors.length} errors.`);
 
       // Clear files that were moved successfully
-      // For simplicity, we just clear the list or re-scan. 
+      // For simplicity, we just clear the list or re-scan.
       // Re-scanning is safer to show remaining files.
       if (sourcePath) {
         handlePathSelect(sourcePath);
@@ -131,10 +234,63 @@ function App() {
     }
   }
 
+  function handleSkip() {
+    // Skip current item without confirming
+    // Find next uncertain item STARTING AFTER current index
+    if (selectedFileIndex === null) return;
+
+    // Logic similar to handleConfirm but doesn't set confirmed=true
+    const nextUncertain = files.findIndex((f, idx) =>
+      idx > selectedFileIndex && !f.confirmed && f.candidates.length > 1
+    );
+
+    if (nextUncertain !== -1) {
+      setSelectedFileIndex(nextUncertain);
+    } else {
+      // No more forward matches - Exit wizard
+      setIsReviewMode(false);
+      setSelectedFileIndex(null);
+    }
+  }
+
+  function handleBack() {
+    // Go to previous uncertain item
+    if (selectedFileIndex === null) return;
+
+    // Find LAST uncertain item that is BEFORE current index
+    // Iterate backwards from selectedIndex - 1
+    let prevUncertain = -1;
+    for (let i = selectedFileIndex - 1; i >= 0; i--) {
+      if (!files[i].confirmed && files[i].candidates.length > 1) {
+        prevUncertain = i;
+        break;
+      }
+    }
+
+    if (prevUncertain !== -1) {
+      setSelectedFileIndex(prevUncertain);
+    } else {
+      // No regular previous item.
+      // Optional: Check if we want to allow going back to CONFIRMED items?
+      // For now just do nothing or alert
+      // alert("No previous items.");
+    }
+  }
+
   const selectedFile = selectedFileIndex !== null ? files[selectedFileIndex] : null;
+  const uncertainCount = files.filter(f => !f.confirmed && f.candidates.length > 1).length;
 
   return (
     <div className="h-screen w-full bg-gray-900 text-white font-sans flex overflow-hidden">
+      {/* Drag Overlay */}
+      {isDragging && (
+        <div className="absolute inset-0 z-50 bg-blue-500/20 backdrop-blur-sm flex items-center justify-center border-4 border-blue-500 border-dashed m-4 rounded-xl">
+          <div className="text-2xl font-bold text-blue-200 pointer-events-none">
+            Drop folder to scan
+          </div>
+        </div>
+      )}
+
       {/* Sidebar Navigation */}
       <aside className="w-64 flex-none h-full border-r border-gray-800 p-6 flex flex-col gap-6 bg-gray-900/50 backdrop-blur-sm z-10">
         <div className="flex items-center gap-3 px-2">
@@ -174,52 +330,130 @@ function App() {
       </aside>
 
       {/* Main Content Area */}
-      <main className="flex-1 h-full overflow-y-auto p-8">
+      <main className="flex-1 h-full overflow-y-auto p-8 relative">
         {view === 'settings' ? (
           <SettingsPage />
         ) : (
-          <div className="space-y-8 animate-fade-in">
-            {/* Scanner View */}
-            <section>
-              <FilePicker
-                currentPath={sourcePath}
-                onPathSelect={handlePathSelect}
-              />
-            </section>
+          <div className="space-y-8 animate-fade-in max-w-6xl mx-auto">
 
+            {/* Initial Empty State / Scanner controls */}
+            {!loading && files.length === 0 && !error && (
+              <div className="flex flex-col items-center justify-center py-20 bg-gray-800/30 border border-gray-700/50 rounded-3xl border-dashed">
+                <div className="bg-gray-800 p-4 rounded-full mb-6">
+                  <FolderOpen size={48} className="text-blue-400" />
+                </div>
+                <h2 className="text-2xl font-bold text-white mb-2">Scan Your Media</h2>
+                <p className="text-gray-400 mb-8 text-center max-w-md">
+                  Drag and drop a folder here, or select a source<br />to automatically organize your files.
+                </p>
+
+                <div className="flex gap-4">
+                  {defaultSource && (
+                    <button
+                      onClick={() => handlePathSelect(defaultSource)}
+                      className="flex items-center gap-2 px-6 py-3 bg-blue-600 hover:bg-blue-500 text-white rounded-xl font-medium transition-colors shadow-lg shadow-blue-900/20"
+                    >
+                      <Play size={20} fill="currentColor" />
+                      Scan Default Source
+                    </button>
+                  )}
+                  <FilePicker
+                    currentPath={null}
+                    onPathSelect={handlePathSelect}
+                    customButton={
+                      <button className="flex items-center gap-2 px-6 py-3 bg-gray-700 hover:bg-gray-600 text-white rounded-xl font-medium transition-colors">
+                        <FolderOpen size={20} />
+                        Browse Folder...
+                      </button>
+                    }
+                  />
+                </div>
+
+                {defaultSource && (
+                  <p className="mt-4 text-xs text-gray-500 font-mono">
+                    Default: {defaultSource}
+                  </p>
+                )}
+              </div>
+            )}
+
+            {/* Error State */}
             {error && (
-              <div className="p-4 rounded-lg bg-red-900/20 border border-red-800 text-red-200">
-                Error: {error}
+              <div className="p-4 rounded-lg bg-red-900/20 border border-red-800 text-red-200 flex justify-between items-center">
+                <span>Error: {error}</span>
+                <button
+                  onClick={() => setError(null)}
+                  className="px-3 py-1 bg-red-900/50 hover:bg-red-900/80 rounded text-sm"
+                >
+                  Dismiss
+                </button>
               </div>
             )}
 
+            {/* Loading State */}
             {loading && (
-              <div className="flex flex-col items-center justify-center py-12 text-gray-400">
-                <Loader2 className="animate-spin mb-3" size={32} />
-                <p>Scanning directory...</p>
+              <div className="flex flex-col items-center justify-center py-32 text-gray-400">
+                <Loader2 className="animate-spin mb-4 text-blue-500" size={48} />
+                <p className="text-lg font-medium text-gray-300">Scanning directory...</p>
+                <p className="text-sm">This might take a moment depending on library size.</p>
               </div>
             )}
 
+            {/* Results */}
             {!loading && files.length > 0 && (
-              <section className="animate-fade-in">
-                <div className="flex items-center justify-between mb-4">
-                  <div className="flex items-center gap-3">
-                    <h2 className="text-lg font-semibold">Scan Results</h2>
+              <section className="animate-fade-in space-y-4">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-4">
+                    <h2 className="text-xl font-bold">Scan Results</h2>
+                    <div className="h-6 w-px bg-gray-700 block mx-2"></div>
+                    <div className="text-sm text-gray-400 font-mono">
+                      {sourcePath}
+                    </div>
+                  </div>
+                  <div className="flex gap-2">
                     <button
                       onClick={() => sourcePath && handlePathSelect(sourcePath)}
-                      className="p-1.5 text-gray-400 hover:text-white hover:bg-gray-700/50 rounded-lg transition-colors"
-                      title="Refresh Scan"
+                      className="p-2 text-gray-400 hover:text-white hover:bg-gray-700 rounded-lg transition-colors"
+                      title="Rescan"
                     >
-                      <RefreshCw size={16} />
+                      <RefreshCw size={20} />
                     </button>
+                    <button
+                      onClick={() => {
+                        setFiles([]);
+                        setSourcePath(null);
+                      }}
+                      className="p-2 text-gray-400 hover:text-white hover:bg-gray-700 rounded-lg transition-colors"
+                      title="Close"
+                    >
+                      <Home size={20} />
+                    </button>
+                  </div>
+                </div>
+
+                <div className="p-4 bg-blue-900/10 border border-blue-900/30 rounded-xl flex items-center justify-between mb-4">
+                  <div className="flex items-center gap-4">
+                    <div className="text-blue-200 text-sm">
+                      Ready to process <strong>{files.length}</strong> files.
+                    </div>
+                    {uncertainCount > 0 && (
+                      <button
+                        onClick={handleReviewUncertain}
+                        className="flex items-center gap-2 px-3 py-1.5 bg-yellow-500/20 text-yellow-200 hover:bg-yellow-500/30 rounded-lg text-xs font-medium border border-yellow-500/30 transition-colors"
+                      >
+                        <RefreshCw size={14} />
+                        Review {uncertainCount} Uncertain
+                      </button>
+                    )}
                   </div>
                   <button
                     onClick={handleMoveAll}
-                    className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-sm font-medium transition-colors"
+                    className="px-6 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-sm font-bold transition-all shadow-lg shadow-blue-900/20 hover:shadow-blue-900/40 transform hover:-translate-y-0.5"
                   >
-                    Move All Files
+                    Execute Rename & Move
                   </button>
                 </div>
+
                 <PreviewTable
                   files={files}
                   onRowClick={handleRowClick}
@@ -228,22 +462,22 @@ function App() {
               </section>
             )}
 
-            {!loading && sourcePath && files.length === 0 && !error && (
-              <div className="text-center py-12 text-gray-500 bg-gray-800/30 rounded-xl border border-dashed border-gray-700">
-                No media files found in this directory.
-              </div>
-            )}
-
             {/* Match Selection Modal is global */}
             <MatchSelectionModal
               isOpen={selectedFileIndex !== null}
-              onClose={() => setSelectedFileIndex(null)}
+              onClose={() => {
+                setSelectedFileIndex(null);
+                setIsReviewMode(false); // Cancel review if closed manually
+              }}
               filename={selectedFile?.filename || ''}
               fileType={selectedFile?.file_type}
               candidates={selectedFile?.candidates || []}
               selectedIndex={selectedFile?.selected_index || 0}
               onUpdateCandidates={handleCandidatesUpdate}
               onSelect={handleCandidateSelect}
+              onConfirm={handleConfirmSelection}
+              onSkip={isReviewMode ? handleSkip : undefined}
+              onBack={isReviewMode ? handleBack : undefined}
             />
           </div>
         )}

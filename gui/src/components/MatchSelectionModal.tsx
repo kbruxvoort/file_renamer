@@ -97,6 +97,9 @@ interface MatchSelectionModalProps {
     selectedIndex: number;
     onUpdateCandidates: (newCandidates: FileCandidate[]) => void;
     onSelect: (index: number) => void;
+    onConfirm: () => void;
+    onSkip?: () => void;
+    onBack?: () => void;
 }
 
 export function MatchSelectionModal({
@@ -107,7 +110,10 @@ export function MatchSelectionModal({
     candidates,
     selectedIndex,
     onUpdateCandidates,
-    onSelect
+    onSelect,
+    onConfirm,
+    onSkip,
+    onBack
 }: MatchSelectionModalProps) {
     const [searchQuery, setSearchQuery] = useState('');
     const [isSearching, setIsSearching] = useState(false);
@@ -161,8 +167,10 @@ export function MatchSelectionModal({
 
             {/* Modal */}
             <div className="relative bg-gray-900 rounded-2xl border border-gray-700 shadow-2xl max-w-4xl w-full max-h-[85vh] overflow-hidden flex flex-col">
+                {/* Header and Content omit for brevity */}
                 {/* Header */}
                 <div className="px-6 py-4 border-b border-gray-800 space-y-4">
+                    {/* ... Header content ... */}
                     <div className="flex items-center justify-between">
                         <div>
                             <h2 className="text-lg font-semibold text-white">Select Match</h2>
@@ -236,18 +244,31 @@ export function MatchSelectionModal({
 
                 {/* Footer */}
                 <div className="px-6 py-4 border-t border-gray-800 flex items-center justify-between bg-gray-900/50">
-                    <span className="text-sm text-gray-500">
-                        {candidates.length} candidate{candidates.length !== 1 ? 's' : ''} found
-                    </span>
+                    <div className="flex items-center gap-4">
+                        {onBack && (
+                            <button
+                                onClick={onBack}
+                                className="px-4 py-2 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-300 text-sm font-medium transition-colors"
+                            >
+                                Back
+                            </button>
+                        )}
+                        <span className="text-sm text-gray-500">
+                            {candidates.length} candidate{candidates.length !== 1 ? 's' : ''} found
+                        </span>
+                    </div>
+
                     <div className="flex gap-3">
+                        {onSkip && (
+                            <button
+                                onClick={onSkip}
+                                className="px-4 py-2 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-300 text-sm font-medium transition-colors"
+                            >
+                                Skip
+                            </button>
+                        )}
                         <button
-                            onClick={onClose}
-                            className="px-4 py-2 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-300 text-sm font-medium transition-colors"
-                        >
-                            Cancel
-                        </button>
-                        <button
-                            onClick={onClose}
+                            onClick={onConfirm}
                             className="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-sm font-medium transition-colors"
                         >
                             Confirm Selection

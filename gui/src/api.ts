@@ -79,6 +79,12 @@ export async function executeMoves(payload: { files: any[] }): Promise<ExecuteRe
     return res.json();
 }
 
+export async function getConfig(): Promise<any> {
+    const res = await fetch(`${API_BASE}/config`);
+    if (!res.ok) throw new Error("Failed to load config");
+    return res.json();
+}
+
 export async function previewRename(original_path: string, selected_candidate: FileCandidate): Promise<string> {
     const res = await fetch(`${API_BASE}/preview_rename`, {
         method: 'POST',
