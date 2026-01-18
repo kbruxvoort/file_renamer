@@ -104,7 +104,7 @@ export function SettingsPage() {
     if (!settings) return <div className="p-8 text-center text-red-400">Error loading settings</div>;
 
     return (
-        <div className="w-full space-y-8 animate-fade-in pb-12">
+        <div className="w-full max-w-6xl mx-auto space-y-8 animate-fade-in pb-12">
             <div>
                 <h2 className="text-xl font-bold text-white mb-2 flex items-center gap-2">
                     <Save size={20} /> Configuration

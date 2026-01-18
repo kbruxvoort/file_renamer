@@ -134,9 +134,9 @@ function App() {
   const selectedFile = selectedFileIndex !== null ? files[selectedFileIndex] : null;
 
   return (
-    <div className="min-h-screen bg-gray-900 text-white font-sans flex">
+    <div className="h-screen w-full bg-gray-900 text-white font-sans flex overflow-hidden">
       {/* Sidebar Navigation */}
-      <aside className="w-64 border-r border-gray-800 p-6 flex flex-col gap-6 bg-gray-900/50 backdrop-blur-sm fixed top-0 bottom-0 z-10 lg:relative lg:translate-x-0 transition-transform">
+      <aside className="w-64 flex-none h-full border-r border-gray-800 p-6 flex flex-col gap-6 bg-gray-900/50 backdrop-blur-sm z-10">
         <div className="flex items-center gap-3 px-2">
           <img src="/icon.png" alt="Logo" className="w-8 h-8 rounded-lg" />
           <h1 className="text-xl font-bold tracking-tight">Sortify</h1>
@@ -174,7 +174,7 @@ function App() {
       </aside>
 
       {/* Main Content Area */}
-      <main className="flex-1 p-8 min-h-screen">
+      <main className="flex-1 h-full overflow-y-auto p-8">
         {view === 'settings' ? (
           <SettingsPage />
         ) : (

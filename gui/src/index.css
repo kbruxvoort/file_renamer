@@ -18,8 +18,13 @@
 
 body {
   margin: 0;
-  display: flex;
-  place-items: center;
   min-width: 320px;
   min-height: 100vh;
+  background-color: #111827;
+  /* bg-gray-900 to match app */
+}
+
+#root {
+  min-height: 100vh;
+  width: 100%;
 }
