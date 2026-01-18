@@ -1,0 +1,25 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+.env
+
+# Temp
+output.txt
+output_v2.txt
+*.log
+
+# Node
+node_modules/
+npm-debug.log
+
+# Rust / Tauri
+gui/src-tauri/target/
+gui/dist/
+target/
