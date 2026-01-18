@@ -27,11 +27,19 @@ export interface ScanResponse {
 
 const API_BASE = "http://127.0.0.1:8742";
 
-export async function scanDirectory(path: string | null): Promise<ScanResponse> {
+export async function scanDirectory(paths: string | string[] | null): Promise<ScanResponse> {
+    const payload: any = { min_size_mb: 0 };
+
+    if (Array.isArray(paths)) {
+        payload.paths = paths;
+    } else if (paths) {
+        payload.path = paths; // or payload.paths = [paths]
+    }
+
     const res = await fetch(`${API_BASE}/scan`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ path, min_size_mb: 0 }) // Default to 0 for testing
+        body: JSON.stringify(payload)
     });
 
     if (!res.ok) {

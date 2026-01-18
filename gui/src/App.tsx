@@ -6,14 +6,16 @@ import { MatchSelectionModal } from './components/MatchSelectionModal';
 import { SettingsPage } from './components/SettingsPage';
 import { scanDirectory, previewRename, getConfig, type FileCandidate } from './api';
 import { Loader2, Settings as SettingsIcon, Home, RefreshCw, FolderOpen, Play } from 'lucide-react';
-import { getCurrentWindow } from '@tauri-apps/api/window'; // For drag and drop if needed, but web API might suffice or listen to tauri event
+import { getCurrentWindow } from '@tauri-apps/api/window';
 
 function App() {
   // Navigation
   const [view, setView] = useState<'scanner' | 'settings'>('scanner');
 
-  const [sourcePath, setSourcePath] = useState<string | null>(null);
+  const [sourcePath, setSourcePath] = useState<string | null>(null); // Display Label
+  const [selectedPaths, setSelectedPaths] = useState<string[]>([]); // Actual paths
   const [defaultSource, setDefaultSource] = useState<string | null>(null);
+
   const [files, setFiles] = useState<FileItem[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -34,10 +36,7 @@ function App() {
     const unlistenPromise = getCurrentWindow().listen('tauri://drag-drop', (event: any) => {
       // payload is { paths: string[], position: { x, y } }
       if (event.payload?.paths?.length > 0) {
-        // Just take the first dropped item as the directory or file
-        // Ideally we should check if it's a directory. Backend scan handles file or dir.
-        // But scanDirectory expects a path string.
-        handlePathSelect(event.payload.paths[0]);
+        handleSelection(event.payload.paths);
       }
       setIsDragging(false);
     });
@@ -52,14 +51,24 @@ function App() {
     };
   }, []);
 
-  async function handlePathSelect(path: string) {
-    setSourcePath(path);
+  async function handleSelection(paths: string[]) {
+    if (paths.length === 0) return;
+
+    setSelectedPaths(paths);
+
+    // Update display label
+    if (paths.length === 1) {
+      setSourcePath(paths[0]);
+    } else {
+      setSourcePath(`${paths.length} items selected`);
+    }
+
     setLoading(true);
     setError(null);
     setFiles([]);
 
     try {
-      const result = await scanDirectory(path);
+      const result = await scanDirectory(paths);
       const uiFiles: FileItem[] = result.files.map(f => ({
         original_path: f.original_path,
         filename: f.filename,
@@ -219,10 +228,9 @@ function App() {
       alert(`Moved ${result.moved.length} files. ${result.errors.length} errors.`);
 
       // Clear files that were moved successfully
-      // For simplicity, we just clear the list or re-scan.
-      // Re-scanning is safer to show remaining files.
-      if (sourcePath) {
-        handlePathSelect(sourcePath);
+      // Rescan if we have selected paths
+      if (selectedPaths.length > 0) {
+        handleSelection(selectedPaths);
       } else {
         setFiles([]);
         setLoading(false);
@@ -271,9 +279,6 @@ function App() {
       setSelectedFileIndex(prevUncertain);
     } else {
       // No regular previous item.
-      // Optional: Check if we want to allow going back to CONFIRMED items?
-      // For now just do nothing or alert
-      // alert("No previous items.");
     }
   }
 
@@ -350,23 +355,37 @@ function App() {
                 <div className="flex gap-4">
                   {defaultSource && (
                     <button
-                      onClick={() => handlePathSelect(defaultSource)}
+                      onClick={() => handleSelection([defaultSource])}
                       className="flex items-center gap-2 px-6 py-3 bg-blue-600 hover:bg-blue-500 text-white rounded-xl font-medium transition-colors shadow-lg shadow-blue-900/20"
                     >
                       <Play size={20} fill="currentColor" />
-                      Scan Default Source
+                      Scan Default
                     </button>
                   )}
-                  <FilePicker
-                    currentPath={null}
-                    onPathSelect={handlePathSelect}
-                    customButton={
-                      <button className="flex items-center gap-2 px-6 py-3 bg-gray-700 hover:bg-gray-600 text-white rounded-xl font-medium transition-colors">
-                        <FolderOpen size={20} />
-                        Browse Folder...
-                      </button>
-                    }
-                  />
+                  <div className="flex flex-col gap-2">
+                    <FilePicker
+                      currentPath={null}
+                      onPathSelect={handleSelection}
+                      type="folder"
+                      customButton={
+                        <button className="flex items-center gap-2 px-6 py-3 bg-gray-700 hover:bg-gray-600 text-white rounded-xl font-medium transition-colors w-full justify-center">
+                          <FolderOpen size={20} />
+                          Browse Folder...
+                        </button>
+                      }
+                    />
+                    <FilePicker
+                      currentPath={null}
+                      onPathSelect={handleSelection}
+                      type="file"
+                      customButton={
+                        <button className="flex items-center gap-2 px-6 py-3 bg-gray-700 hover:bg-gray-600 text-white rounded-xl font-medium transition-colors w-full justify-center">
+                          <FolderOpen size={20} />
+                          Select Files...
+                        </button>
+                      }
+                    />
+                  </div>
                 </div>
 
                 {defaultSource && (
@@ -412,7 +431,7 @@ function App() {
                   </div>
                   <div className="flex gap-2">
                     <button
-                      onClick={() => sourcePath && handlePathSelect(sourcePath)}
+                      onClick={() => selectedPaths.length > 0 && handleSelection(selectedPaths)}
                       className="p-2 text-gray-400 hover:text-white hover:bg-gray-700 rounded-lg transition-colors"
                       title="Rescan"
                     >
@@ -422,6 +441,7 @@ function App() {
                       onClick={() => {
                         setFiles([]);
                         setSourcePath(null);
+                        setSelectedPaths([]);
                       }}
                       className="p-2 text-gray-400 hover:text-white hover:bg-gray-700 rounded-lg transition-colors"
                       title="Close"

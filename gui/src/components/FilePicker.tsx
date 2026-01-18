@@ -4,24 +4,29 @@ import { clsx } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 
 interface FilePickerProps {
-    currentPath: string | null;
-    onPathSelect: (path: string) => void;
+    currentPath: string | null; // For display only now
+    onPathSelect: (paths: string[]) => void; // Changed to array
     className?: string;
     customButton?: React.ReactNode;
+    type?: 'file' | 'folder';
 }
 
-export function FilePicker({ currentPath, onPathSelect, className, customButton }: FilePickerProps) {
+export function FilePicker({ currentPath, onPathSelect, className, customButton, type = 'folder' }: FilePickerProps) {
 
     async function handleBrowse() {
         try {
             const selected = await open({
-                directory: true,
-                multiple: false,
-                title: "Select Source Directory"
+                directory: type === 'folder',
+                multiple: type === 'file', // Allow multiple files, but folders usually single
+                title: type === 'folder' ? "Select Source Directory" : "Select Media Files"
             });
 
-            if (selected && typeof selected === 'string') {
-                onPathSelect(selected);
+            if (selected) {
+                if (Array.isArray(selected)) {
+                    onPathSelect(selected);
+                } else {
+                    onPathSelect([selected]);
+                }
             }
         } catch (err) {
             console.error("Failed to open dialog:", err);
@@ -52,15 +57,22 @@ export function FilePicker({ currentPath, onPathSelect, className, customButton 
                     "p-4 rounded-full transition-colors",
                     currentPath ? "bg-green-500/20 text-green-400" : "bg-gray-700 group-hover:bg-blue-500/20 group-hover:text-blue-400"
                 )}>
-                    {currentPath ? <FolderOpen size={32} /> : <FileUp size={32} />}
+                    {type === 'folder' ? (
+                        currentPath ? <FolderOpen size={32} /> : <FileUp size={32} />
+                    ) : (
+                        <FileUp size={32} />
+                    )}
                 </div>
 
                 <div className="text-center">
                     <h3 className="text-lg font-semibold text-white">
-                        {currentPath ? "Source Directory Selected" : "Select Media Directory"}
+                        {currentPath
+                            ? (type === 'folder' ? "Source Selected" : "Files Selected")
+                            : (type === 'folder' ? "Select Media Directory" : "Select Files")
+                        }
                     </h3>
                     <p className="text-sm text-gray-400 mt-1 max-w-md truncate">
-                        {currentPath || "Click to browse folders"}
+                        {currentPath || (type === 'folder' ? "Click to browse folders" : "Click to select files")}
                     </p>
                 </div>
             </div>

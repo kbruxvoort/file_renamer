@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Optional, List, Dict, Any
 import asyncio
 
-from src.scanner import scan_directory, VIDEO_EXTENSIONS, AUDIO_EXTENSIONS, BOOK_EXTENSIONS
+from src.scanner import scan_directory, VIDEO_EXTENSIONS, AUDIO_EXTENSIONS, BOOK_EXTENSIONS, ALL_EXTENSIONS
 from src.renamer import renamer
 from src.config import config, CONFIG_PATH
 
@@ -27,7 +27,8 @@ app.add_middleware(
 # ============== Models ==============
 
 class ScanRequest(BaseModel):
-    path: Optional[str] = None
+    paths: Optional[List[str]] = None
+    path: Optional[str] = None # Backwards compatibility/fallback
     min_size_mb: int = 50
 
 class FileCandidate(BaseModel):
@@ -60,152 +61,115 @@ class ConfigUpdate(BaseModel):
     key: str
     value: str
 
-# ============== Endpoints ==============
-
-@app.get("/health")
-async def health_check():
-    return {"status": "ok", "version": "1.0.0"}
-
-@app.get("/config")
-async def get_config(reveal_keys: bool = False):
-    return {
-        "TMDB_API_KEY": config.TMDB_API_KEY if reveal_keys else ("***" if config.TMDB_API_KEY else None),
-        "DEST_DIR": str(config.DEST_DIR),
-        "MOVIE_DIR": str(config.MOVIE_DIR),
-        "TV_DIR": str(config.TV_DIR),
-        "BOOK_DIR": str(config.BOOK_DIR),
-        "AUDIOBOOK_DIR": str(config.AUDIOBOOK_DIR),
-        "SOURCE_DIR": str(config.SOURCE_DIR) if config.SOURCE_DIR else None,
-        "MIN_VIDEO_SIZE_MB": config.MIN_VIDEO_SIZE_MB,
-        "MOVIE_TEMPLATE": config.MOVIE_TEMPLATE,
-        "TV_TEMPLATE": config.TV_TEMPLATE,
-        "BOOK_TEMPLATE": config.BOOK_TEMPLATE,
-        "AUDIOBOOK_TEMPLATE": config.AUDIOBOOK_TEMPLATE,
-    }
-
-@app.post("/config")
-async def update_config(update: ConfigUpdate):
-    config.save(update.key.upper(), update.value)
-    return {"status": "updated", "key": update.key.upper()}
-
-class SearchRequest(BaseModel):
-    query: str
-    type: str  # movie, tv, book, audiobook
-
-@app.post("/search")
-async def manual_search(request: SearchRequest):
-    """
-    Manually search for a specific title.
-    """
-    metadata = {'title': request.query, 'type': request.type}
-    
-    # Reuse renamer logic to fetch candidates
-    candidates_raw = await renamer.get_candidates(metadata)
-    
-    # Convert to FileCandidate (duplicate logic, should refactor but this is faster)
-    candidates = []
-    for c in candidates_raw:
-        poster_url = None
-        if c.get('poster_path'):
-            if c.get('type') in ['movie', 'tv']:
-                poster_url = f"https://image.tmdb.org/t/p/w200/{c.get('poster_path').lstrip('/')}"
-            elif c.get('type') in ['book', 'audiobook']:
-                poster_url = c.get('poster_path')
-        
-        candidates.append(FileCandidate(
-            title=c.get('title', 'Unknown'),
-            year=c.get('year'),
-            overview=c.get('overview'),
-            poster_url=poster_url,
-            id=c.get('id'),
-            type=c.get('type', 'unknown'),
-            score=c.get('score'),
-            author=c.get('author')
-        ))
-    
-    return {"candidates": candidates}
-
 @app.post("/scan", response_model=ScanResponse)
 async def scan_files(request: ScanRequest):
-    # Determine source path
-    scan_path = Path(request.path) if request.path else config.SOURCE_DIR
-    if not scan_path:
-        raise HTTPException(status_code=400, detail="No path provided and SOURCE_DIR not configured")
+    # Determine source paths
+    scan_paths = []
+    if request.paths:
+        scan_paths = [Path(p) for p in request.paths]
+    elif request.path:
+        scan_paths = [Path(request.path)]
+    elif config.SOURCE_DIR:
+        scan_paths = [config.SOURCE_DIR]
     
-    if not scan_path.exists():
-        raise HTTPException(status_code=404, detail=f"Path does not exist: {scan_path}")
+    if not scan_paths:
+        raise HTTPException(status_code=400, detail="No paths provided and SOURCE_DIR not configured")
     
     files: List[ScannedFile] = []
     
-    for file_path in scan_directory(scan_path, min_video_size_mb=float(request.min_size_mb)):
-        # Parse filename
-        metadata = renamer.parse_filename(file_path)
-        
-        # Get candidates from API
-        candidates_raw = await renamer.get_candidates(metadata)
-        
-        # Convert to FileCandidate models
-        candidates = []
-        for c in candidates_raw:
-            # Debug logging
-            print(f"Candidate ({c.get('type')}): {c.get('title')} - Poster: {c.get('poster_path')}")
+    # Process each path
+    for path in scan_paths:
+        if not path.exists():
+            print(f"Skipping non-existent path: {path}")
+            continue
 
-            # Add TMDB poster URL if available
-            poster_url = None
-            if c.get('poster_path'):
-                if c.get('type') in ['movie', 'tv']:
-                    # TMDB returns relative path
-                    poster_url = f"https://image.tmdb.org/t/p/w200/{c.get('poster_path').lstrip('/')}"
-                elif c.get('type') in ['book', 'audiobook']:
-                    # Google Books / Audnexus returns full URL
-                    poster_url = c.get('poster_path')
-            
-            candidates.append(FileCandidate(
-                title=c.get('title', 'Unknown'),
-                year=c.get('year'),
-                overview=c.get('overview'),
-                poster_url=poster_url,
-                id=c.get('id'),
-                type=c.get('type', 'unknown'),
-                score=c.get('score'),
-                author=c.get('author')
-            ))
+        search_targets = []
+        if path.is_file():
+            # If it's a file, verify extension and add directly
+            if path.suffix.lower() in ALL_EXTENSIONS: 
+                 search_targets.append(path)
+            else:
+                 # Check if the user really wanted this file? 
+                 # For drag and drop of specific file, we might want to check against ALL_EXTENSIONS
+                 # But we need access to that list. Imported from scanner below.
+                 pass
+        else:
+            # It's a directory, scan it
+            search_targets.extend(scan_directory(path, min_video_size_mb=float(request.min_size_mb)))
+
         
-        # Propose path using first candidate (default selection)
-        selected_metadata = metadata.copy()
-        if candidates:
-            selected_metadata.update(candidates_raw[0])
-            # Renamer ensures explicit type 'audiobook' is preserved or set
-            
-        # Get relative path from renamer
-        new_relative = renamer.propose_new_path(file_path, selected_metadata)
-        
-        # Determine base directory
-        base_dir = config.DEST_DIR
-        ftype = selected_metadata.get('type')
-        if ftype == 'movie':
-            base_dir = config.MOVIE_DIR
-        elif ftype == 'tv':
-            base_dir = config.TV_DIR
-        elif ftype == 'book':
-            base_dir = config.BOOK_DIR
-        elif ftype == 'audiobook':
-            base_dir = config.AUDIOBOOK_DIR
-            
-        proposed_path = str(base_dir / new_relative)
-        
-        files.append(ScannedFile(
-            original_path=str(file_path),
-            filename=file_path.name,
-            file_type=ftype or 'unknown',
-            candidates=candidates,
-            selected_index=0,
-            proposed_path=proposed_path
-        ))
+        for file_path in search_targets:
+            # Parse filename
+            try:
+                metadata = renamer.parse_filename(file_path)
+                
+                # Get candidates from API
+                candidates_raw = await renamer.get_candidates(metadata)
+                
+                # Convert to FileCandidate models
+                candidates = []
+                for c in candidates_raw:
+                    # Add TMDB poster URL if available
+                    poster_url = None
+                    if c.get('poster_path'):
+                        if c.get('type') in ['movie', 'tv']:
+                            # TMDB returns relative path
+                            poster_url = f"https://image.tmdb.org/t/p/w200/{c.get('poster_path').lstrip('/')}"
+                        elif c.get('type') in ['book', 'audiobook']:
+                            # Google Books / Audnexus returns full URL
+                            poster_url = c.get('poster_path')
+                    
+                    candidates.append(FileCandidate(
+                        title=c.get('title', 'Unknown'),
+                        year=c.get('year'),
+                        overview=c.get('overview'),
+                        poster_url=poster_url,
+                        id=c.get('id'),
+                        type=c.get('type', 'unknown'),
+                        score=c.get('score'),
+                        author=c.get('author')
+                    ))
+                
+                # Propose path using first candidate (default selection)
+                selected_metadata = metadata.copy()
+                if candidates:
+                    selected_metadata.update(candidates_raw[0])
+                
+                # Get relative path from renamer
+                new_relative = renamer.propose_new_path(file_path, selected_metadata)
+                
+                # Determine base directory
+                base_dir = config.DEST_DIR
+                ftype = selected_metadata.get('type')
+                if ftype == 'movie':
+                    base_dir = config.MOVIE_DIR
+                elif ftype == 'tv':
+                    base_dir = config.TV_DIR
+                elif ftype == 'book':
+                    base_dir = config.BOOK_DIR
+                elif ftype == 'audiobook':
+                    base_dir = config.AUDIOBOOK_DIR
+                    
+                proposed_path = str(base_dir / new_relative)
+                
+                files.append(ScannedFile(
+                    original_path=str(file_path),
+                    filename=file_path.name,
+                    file_type=ftype or 'unknown',
+                    candidates=candidates,
+                    selected_index=0,
+                    proposed_path=proposed_path
+                ))
+            except Exception as e:
+                print(f"Error processing {file_path}: {e}")
+                continue
     
+    # Just use first path or config as source_dir for display
+    display_source = str(scan_paths[0]) if scan_paths else str(config.SOURCE_DIR)
+
     return ScanResponse(
         files=files,
-        source_dir=str(scan_path),
+        source_dir=display_source, 
         dest_dir=str(config.DEST_DIR)
     )
 
