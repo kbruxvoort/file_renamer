@@ -213,13 +213,18 @@ async def scan_files(request: ScanRequest):
 async def execute_moves(request: ExecuteRequest):
     import shutil
     
+    from src import filesystem
+
     moved = []
     errors = []
     
     for file_info in request.files:
         try:
             original = Path(file_info['original_path'])
-            
+            if not original.exists():
+                 errors.append({"file": str(original), "error": "File not found"})
+                 continue
+
             # Rebuild metadata from selected candidate
             metadata = renamer.parse_filename(original)
             if file_info.get('selected_candidate'):
@@ -240,16 +245,58 @@ async def execute_moves(request: ExecuteRequest):
             elif ftype == 'audiobook':
                 base_dir = config.AUDIOBOOK_DIR
                 
-            target = base_dir / new_relative
+            target_main = base_dir / new_relative
             
-            # Create directories and move
-            target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.move(str(original), str(target))
+            # 1. Identify Associated Files (BEFORE moving the main file)
+            associated_files = filesystem.find_associated_files(original)
+            
+            # 2. Move Main File
+            final_target = filesystem.move_file(original, target_main)
             
             moved.append({
                 "from": str(original),
-                "to": str(target)
+                "to": str(final_target)
             })
+            
+            # 3. Move Associated Files
+            # They should follow the main file's new name but keep their extensions
+            # e.g. "Movie.mkv" -> "New Name (2020).mkv"
+            #      "Movie.srt" -> "New Name (2020).srt"
+            #      "Movie.en.srt" -> "New Name (2020).en.srt"
+            
+            main_stem_len = len(original.stem)
+            
+            for assoc in associated_files:
+                try:
+                    # Calculate new name for associated file
+                    # We want to replace the original stem with the new stem
+                    # But handle complex extensions like .en.srt
+                    
+                    # Simple approach: Replace the start of the filename
+                    # original.name: "MyMovie.en.srt"
+                    # original.stem: "MyMovie"
+                    # target_main.stem: "Real Data (2020)"
+                    
+                    suffix_part = assoc.name[len(original.stem):] # ".en.srt"
+                    new_assoc_name = final_target.stem + suffix_part
+                    target_assoc = final_target.parent / new_assoc_name
+                    
+                    filesystem.move_file(assoc, target_assoc)
+                    
+                    moved.append({
+                        "from": str(assoc),
+                        "to": str(target_assoc),
+                        "associated": True
+                    })
+                except Exception as e:
+                    print(f"Failed to move associated file {assoc}: {e}")
+            
+            # 4. Clean up source directory
+            # We cleanup from the original parent up to the SOURCE_DIR (if configured)
+            # or just up one level if we are cautious
+            source_root = config.SOURCE_DIR if config.SOURCE_DIR else None
+            filesystem.clean_empty_dirs(original.parent, root_path=source_root)
+
         except Exception as e:
             errors.append({
                 "file": file_info.get('original_path'),
