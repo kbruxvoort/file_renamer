@@ -38,6 +38,12 @@ def build():
         "--hidden-import=rich",
         "--hidden-import=typer",
         "--hidden-import=tenacity",
+        "--hidden-import=dotenv",
+        "--hidden-import=bs4",
+        "--hidden-import=aiohttp",
+        "--hidden-import=requests",
+        "--hidden-import=httpx",
+        "--hidden-import=httpcore",
         "--collect-all=rich", # Collect rich assets/themes if needed
     ]
     

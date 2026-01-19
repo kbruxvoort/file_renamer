@@ -7,6 +7,7 @@ import { SettingsPage } from './components/SettingsPage';
 import { scanDirectory, previewRename, getConfig, undoLastOperation, getHistory, type FileCandidate } from './api';
 import { Loader2, Settings as SettingsIcon, Home, RefreshCw, FolderOpen, Play, RotateCcw } from 'lucide-react';
 import { getCurrentWindow } from '@tauri-apps/api/window';
+import { getVersion } from '@tauri-apps/api/app';
 
 function App() {
   // Navigation
@@ -15,6 +16,7 @@ function App() {
   const [sourcePath, setSourcePath] = useState<string | null>(null); // Display Label
   const [selectedPaths, setSelectedPaths] = useState<string[]>([]); // Actual paths
   const [defaultSource, setDefaultSource] = useState<string | null>(null);
+  const [appVersion, setAppVersion] = useState<string | null>(null);
 
   const [files, setFiles] = useState<FileItem[]>([]);
   const [loading, setLoading] = useState(false);
@@ -63,6 +65,37 @@ function App() {
       unlistenEnter.then(unlisten => unlisten());
       unlistenLeave.then(unlisten => unlisten());
     };
+  }, []);
+
+  useEffect(() => {
+    getVersion().then(setAppVersion).catch(console.error);
+  }, []);
+
+  // Update Check
+  useEffect(() => {
+    async function checkForUpdates() {
+      try {
+        const { check } = await import('@tauri-apps/plugin-updater');
+        const { ask } = await import('@tauri-apps/plugin-dialog');
+        const { relaunch } = await import('@tauri-apps/plugin-process');
+
+        const update = await check();
+        if (update && update.available) {
+          const yes = await ask(
+            `A new version of Sortify is available: ${update.version}\n\nDo you want to update now?`,
+            { title: 'Update Available', kind: 'info', okLabel: 'Update', cancelLabel: 'Cancel' }
+          );
+          if (yes) {
+            await update.downloadAndInstall();
+            await relaunch();
+          }
+        }
+      } catch (e) {
+        console.error("Failed to check for updates:", e);
+      }
+    }
+
+    checkForUpdates();
   }, []);
 
   // Reload config when switching back to scanner
@@ -391,9 +424,16 @@ function App() {
               Undo Last Batch
             </button>
           )}
-          <div className="flex items-center gap-2 text-xs text-gray-500 px-2">
-            <span className="w-2 h-2 rounded-full bg-green-500"></span>
-            API Connected
+          <div className="flex flex-col gap-1 px-2">
+            <div className="flex items-center gap-2 text-xs text-gray-500">
+              <span className="w-2 h-2 rounded-full bg-green-500"></span>
+              API Connected
+            </div>
+            {appVersion && (
+              <div className="text-[10px] text-gray-600 font-mono">
+                v{appVersion}
+              </div>
+            )}
           </div>
         </div>
       </aside>

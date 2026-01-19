@@ -10,15 +10,19 @@ from typing import Optional, List, Dict, Any
 import asyncio
 import logging
 
-from src.scanner import scan_directory, VIDEO_EXTENSIONS, AUDIO_EXTENSIONS, BOOK_EXTENSIONS, ALL_EXTENSIONS
-from src.renamer import renamer
-from src.config import config, CONFIG_PATH
-from src.undo import undo_manager
+# Initialize Logging EARLY to capture import errors
 from src.logger import setup_logging
-
-# Initialize Logging
 setup_logging()
 logger = logging.getLogger(__name__)
+
+try:
+    from src.scanner import scan_directory, VIDEO_EXTENSIONS, AUDIO_EXTENSIONS, BOOK_EXTENSIONS, ALL_EXTENSIONS
+    from src.renamer import renamer
+    from src.config import config, CONFIG_PATH
+    from src.undo import undo_manager
+except Exception as e:
+    logger.critical(f"Startup Failure: {e}", exc_info=True)
+    raise e
 
 app = FastAPI(title="Sortify API", version="1.0.0")
 
@@ -333,37 +337,40 @@ async def undo_last_operation():
 async def get_config(reveal_keys: bool = False):
     """
     Get current configuration.
-    reveal_keys: If True, returns actual usage API keys. If False, masks them.
-    (Local app, so strict masking is less critical but good practice for screenshots)
     """
-    # Force reload from disk in case external changes happened
-    config._load_from_file()
-    
-    # We construct a dict of all properties we want to expose
-    # This matches the Settings interface in frontend
-    cfg = {
-        "TMDB_API_KEY": config.TMDB_API_KEY,
-        "DEST_DIR": str(config.DEST_DIR),
-        "MOVIE_DIR": str(config.MOVIE_DIR),
-        "TV_DIR": str(config.TV_DIR),
-        "BOOK_DIR": str(config.BOOK_DIR),
-        "AUDIOBOOK_DIR": str(config.AUDIOBOOK_DIR),
-        "SOURCE_DIR": str(config.SOURCE_DIR) if config.SOURCE_DIR else None,
-        "MIN_VIDEO_SIZE_MB": config.MIN_VIDEO_SIZE_MB,
-        "MOVIE_TEMPLATE": config.MOVIE_TEMPLATE,
-        "TV_TEMPLATE": config.TV_TEMPLATE,
-        "BOOK_TEMPLATE": config.BOOK_TEMPLATE,
-        "AUDIOBOOK_TEMPLATE": config.AUDIOBOOK_TEMPLATE,
-    }
-    
-    # Mask key if needed
-    if not reveal_keys and cfg["TMDB_API_KEY"]:
-        # Only show last 4 chars
-        key = cfg["TMDB_API_KEY"]
-        if len(key) > 4:
-            cfg["TMDB_API_KEY"] = "***" + key[-4:]
-            
-    return cfg
+    try:
+        logger.info(f"GET /config request received. reveal_keys={reveal_keys}")
+        
+        # Force reload from disk
+        config._load_from_file()
+        
+        # Construct response
+        cfg = {
+            "TMDB_API_KEY": config.TMDB_API_KEY,
+            "DEST_DIR": str(config.DEST_DIR),
+            "MOVIE_DIR": str(config.MOVIE_DIR),
+            "TV_DIR": str(config.TV_DIR),
+            "BOOK_DIR": str(config.BOOK_DIR),
+            "AUDIOBOOK_DIR": str(config.AUDIOBOOK_DIR),
+            "SOURCE_DIR": str(config.SOURCE_DIR) if config.SOURCE_DIR else None,
+            "MIN_VIDEO_SIZE_MB": config.MIN_VIDEO_SIZE_MB,
+            "MOVIE_TEMPLATE": config.MOVIE_TEMPLATE,
+            "TV_TEMPLATE": config.TV_TEMPLATE,
+            "BOOK_TEMPLATE": config.BOOK_TEMPLATE,
+            "AUDIOBOOK_TEMPLATE": config.AUDIOBOOK_TEMPLATE,
+        }
+        
+        # Mask key if needed
+        if not reveal_keys and cfg["TMDB_API_KEY"]:
+            key = cfg["TMDB_API_KEY"]
+            if len(key) > 4:
+                cfg["TMDB_API_KEY"] = "***" + key[-4:]
+                
+        logger.info("GET /config success")
+        return cfg
+    except Exception as e:
+        logger.error(f"GET /config failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/config")
 async def update_config(update: ConfigUpdate):
