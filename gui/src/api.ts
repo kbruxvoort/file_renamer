@@ -104,11 +104,24 @@ export async function executeMoves(payload: { files: any[] }): Promise<ExecuteRe
     return res.json();
 }
 
-export async function getConfig(): Promise<any> {
+export async function getConfig(reveal_keys: boolean = false): Promise<any> {
     const baseUrl = await getApiBase();
-    const res = await fetch(`${baseUrl}/config`);
+    const res = await fetch(`${baseUrl}/config?reveal_keys=${reveal_keys}`);
     if (!res.ok) throw new Error("Failed to load config");
     return res.json();
+}
+
+export async function updateConfig(key: string, value: string): Promise<void> {
+    const baseUrl = await getApiBase();
+    const res = await fetch(`${baseUrl}/config`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ key, value })
+    });
+
+    if (!res.ok) {
+        throw new Error("Failed to save config");
+    }
 }
 
 export async function previewRename(original_path: string, selected_candidate: FileCandidate): Promise<string> {

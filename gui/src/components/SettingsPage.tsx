@@ -2,6 +2,7 @@
 import { Save, FolderOpen, Eye, EyeOff } from 'lucide-react';
 import { useState, useEffect } from 'react';
 import { open } from '@tauri-apps/plugin-dialog';
+import { getConfig, updateConfig } from '../api';
 
 interface Settings {
     TMDB_API_KEY: string | null;
@@ -17,8 +18,6 @@ interface Settings {
     BOOK_TEMPLATE: string;
     AUDIOBOOK_TEMPLATE: string;
 }
-
-const API_BASE = "http://127.0.0.1:8742";
 
 // Presets
 const PRESETS = {
@@ -49,14 +48,12 @@ export function SettingsPage() {
 
     async function loadSettings() {
         try {
-            // Pass visible=true if showKey is on, otherwise we get ***
-            const res = await fetch(`${API_BASE}/config?reveal_keys=${showKey}`);
-            if (!res.ok) throw new Error("Failed to load config");
-            const data = await res.json();
+            // Use API client which handles dynamic port
+            const data = await getConfig(showKey);
             setSettings(data);
         } catch (err) {
             console.error(err);
-            setMessage({ type: 'error', text: "Failed to load settings" });
+            setMessage({ type: 'error', text: `Failed to load settings: ${err}` });
         } finally {
             setLoading(false);
         }
@@ -69,18 +66,15 @@ export function SettingsPage() {
         setSettings({ ...settings, [key]: value });
 
         try {
-            const res = await fetch(`${API_BASE}/config`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ key, value })
-            });
-            if (!res.ok) throw new Error("Failed to save");
+            // Use API client
+            await updateConfig(key, value);
+
             // Clear message after 3s
             setMessage({ type: 'success', text: "Saved" });
             setTimeout(() => setMessage(null), 3000);
         } catch (err) {
             console.error(err);
-            setMessage({ type: 'error', text: `Failed to save ${key}` });
+            setMessage({ type: 'error', text: `Failed to save ${key}: ${err}` });
         }
     }
 

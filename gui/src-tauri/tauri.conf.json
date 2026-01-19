@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "Sortify",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "identifier": "com.renamer.app",
   "build": {
     "frontendDist": "../dist",
@@ -22,7 +22,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self' 'unsafe-inline' 'unsafe-eval' http://127.0.0.1:* ws://localhost:5173; img-src 'self' https://image.tmdb.org https://books.google.com data: asset: match-poster:;"
+      "csp": "default-src 'self' 'unsafe-inline' 'unsafe-eval' http://127.0.0.1:* ws://localhost:5173; img-src 'self' https://image.tmdb.org https://books.google.com https://*.googleusercontent.com http://books.google.com https://*.mzstatic.com https://itunes.apple.com data: asset: match-poster:;"
     }
   },
   "bundle": {
