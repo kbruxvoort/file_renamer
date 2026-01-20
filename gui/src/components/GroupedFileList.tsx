@@ -7,16 +7,14 @@ import {
 } from 'lucide-react';
 import { clsx } from 'clsx';
 import type { FileItem } from '../types';
-import type { FileCandidate } from '../api';
 
 interface GroupedFileListProps {
     files: FileItem[];
     onRowClick: (index: number) => void;
     onRemove: (index: number) => void;
-    onPropagateMatch: (folderPath: string, candidateId: number) => void;
 }
 
-export function GroupedFileList({ files, onRowClick, onRemove, onPropagateMatch }: GroupedFileListProps) {
+export function GroupedFileList({ files, onRowClick, onRemove }: GroupedFileListProps) {
     // derived state: group by folder
     const groups = useMemo(() => {
         const map = new Map<string, FileItem[]>();
@@ -43,25 +41,23 @@ export function GroupedFileList({ files, onRowClick, onRemove, onPropagateMatch 
                     allFiles={files}
                     onRowClick={onRowClick}
                     onRemove={onRemove}
-                    onPropagateMatch={onPropagateMatch}
                 />
             ))}
         </div>
     );
 }
 
-function FolderGroup({ dir, files, allFiles, onRowClick, onRemove, onPropagateMatch }: {
+function FolderGroup({ dir, files, allFiles, onRowClick, onRemove }: {
     dir: string,
     files: FileItem[],
     allFiles: FileItem[],
     onRowClick: (idx: number) => void,
-    onRemove: (idx: number) => void,
-    onPropagateMatch: (dir: string, cid: number) => void
+    onRemove: (idx: number) => void
 }) {
     const [isExpanded, setIsExpanded] = useState(true);
 
     // Group Intelligence
-    const firstCand = files[0]?.candidates[files[0]?.selected_index]; // Added optional chaining
+    const firstCand = files[0]?.candidates[files[0]?.selected_index];
 
     // Check if this looks like a "Show Folder" or a "Mixed Bag"
     // Heuristic: If >1 items and ALL match the same Show Title, it's a Show.
@@ -84,8 +80,6 @@ function FolderGroup({ dir, files, allFiles, onRowClick, onRemove, onPropagateMa
     }
 
     // Stats
-    const confirmedCount = files.filter(f => f.confirmed).length;
-    // const isAllConfirmed = confirmedCount === files.length;
     const hasUncertain = files.some(f => !f.confirmed && f.candidates.length > 1);
 
     return (
