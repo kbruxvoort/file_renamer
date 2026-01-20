@@ -5,10 +5,12 @@ import { type FileItem } from './types';
 import { GroupedFileList } from './components/GroupedFileList';
 import { MatchSelectionModal } from './components/MatchSelectionModal';
 import { SettingsPage } from './components/SettingsPage';
+import { UpdateModal } from './components/UpdateModal'; // New
 import { scanDirectory, previewRename, getConfig, undoLastOperation, getHistory, sendHeartbeat, type FileCandidate } from './api';
-import { Loader2, Settings as SettingsIcon, Home, RefreshCw, FolderOpen, Play, RotateCcw } from 'lucide-react';
+import { Loader2, Settings as SettingsIcon, Home, RefreshCw, FolderOpen, Play, RotateCcw, ArrowUpCircle } from 'lucide-react'; // Added ArrowUpCircle
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { getVersion } from '@tauri-apps/api/app';
+import { useUpdater } from './hooks/useUpdater'; // New hook
 
 function App() {
   // Navigation
@@ -30,6 +32,29 @@ function App() {
 
   // Undo visibility
   const [hasHistory, setHasHistory] = useState(false);
+
+  // Updater
+  const {
+    status: updateStatus,
+    updateAvailable,
+    downloadProgress,
+    checkUpdate,
+    installUpdate,
+    mockUpdate,
+    error: updateError
+  } = useUpdater();
+
+  const [isUpdateModalOpen, setIsUpdateModalOpen] = useState(false);
+
+  // Open modal when update becomes available (optional auto-open)
+  useEffect(() => {
+    if (updateStatus === 'available') {
+      // setIsUpdateModalOpen(true); // Uncomment to auto-open
+      // For now, we rely on the user clicking the sidebar button or a toast (not impl yet)
+      // But let's auto-open for visibility if desired.
+      // Let's NOT auto-open to be less intrusive, but maybe show a dot.
+    }
+  }, [updateStatus]);
 
   // Load config helper
   const loadConfig = () => {
@@ -72,32 +97,9 @@ function App() {
     getVersion().then(setAppVersion).catch(console.error);
   }, []);
 
-  // Update Check
-  useEffect(() => {
-    async function checkForUpdates() {
-      try {
-        const { check } = await import('@tauri-apps/plugin-updater');
-        const { ask } = await import('@tauri-apps/plugin-dialog');
-        const { relaunch } = await import('@tauri-apps/plugin-process');
+  // Update Check (handled by hook, initial check is automatic)
+  // We can just rely on useUpdater's internal useEffect
 
-        const update = await check();
-        if (update && update.available) {
-          const yes = await ask(
-            `A new version of Sortify is available: ${update.version}\n\nDo you want to update now?`,
-            { title: 'Update Available', kind: 'info', okLabel: 'Update', cancelLabel: 'Cancel' }
-          );
-          if (yes) {
-            await update.downloadAndInstall();
-            await relaunch();
-          }
-        }
-      } catch (e) {
-        console.error("Failed to check for updates:", e);
-      }
-    }
-
-    checkForUpdates();
-  }, []);
 
   // Heartbeat
   useEffect(() => {
@@ -540,10 +542,39 @@ function App() {
               API Connected
             </div>
             {appVersion && (
-              <div className="text-[10px] text-gray-600 font-mono">
+              <div
+                className="text-[10px] text-gray-600 font-mono cursor-pointer hover:text-blue-400 transition-colors"
+                onClick={() => {
+                  // Easter egg: Triple click to force mock? Or just single click to check manual?
+                  // Let's make it single click to check, or if dev, mock.
+                  if (updateStatus === 'idle' || updateStatus === 'error') {
+                    checkUpdate();
+                  }
+                }}
+                title="Click to check for updates"
+              >
                 v{appVersion}
               </div>
             )}
+
+            {/* Update available badge/button */}
+            {updateStatus === 'available' && (
+              <button
+                onClick={() => setIsUpdateModalOpen(true)}
+                className="mt-2 w-full flex items-center gap-2 px-3 py-2 bg-blue-600/20 text-blue-400 rounded-lg text-xs font-bold border border-blue-600/50 hover:bg-blue-600/30 transition-all animate-pulse"
+              >
+                <ArrowUpCircle size={14} />
+                Update Available
+              </button>
+            )}
+
+            {/* Dev/Mock Trigger (Hidden or obvious for now since user requested it) */}
+            <button
+              onClick={mockUpdate}
+              className="mt-4 text-[10px] text-gray-700 hover:text-gray-500 uppercase tracking-widest text-center w-full"
+            >
+              Test Update UI
+            </button>
           </div>
         </div>
       </aside>
@@ -736,6 +767,19 @@ function App() {
               onConfirm={handleConfirmSelection}
               onSkip={isReviewMode ? handleSkip : undefined}
               onBack={isReviewMode ? handleBack : undefined}
+            />
+
+            <UpdateModal
+              isOpen={isUpdateModalOpen}
+              onClose={() => setIsUpdateModalOpen(false)}
+              update={updateAvailable}
+              status={updateStatus}
+              progress={downloadProgress}
+              error={updateError}
+              onConfirm={() => {
+                installUpdate();
+                // do not close modal here, it will show progress
+              }}
             />
           </div>
         )}

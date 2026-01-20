@@ -43,7 +43,7 @@
     "updater": {
       "active": true,
       "endpoints": [
-        "https://github.com/kbruxvoort/file-renamer/releases/latest/download/latest.json"
+        "https://github.com/kbruxvoort/file_renamer/releases/latest/download/latest.json"
       ],
       "dialog": true,
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEE2NEIxOEY4NjlGOTAzOTUKUldTVkEvbHArQmhMcGlRRUVlWldaZjAwNDRhcHBTdTBCRTRUNXB3QytnZVZrRHAvU1M3WkFxeDgK"
