@@ -323,13 +323,6 @@ function App() {
 
   // ... (rest of render)
 
-  // Replace PreviewTable with GroupedFileList
-  <GroupedFileList
-    files={files}
-    onRowClick={handleRowClick}
-    onRemove={handleRemoveFile}
-    onPropagateMatch={() => { }} // Propagation handled in modal confirm for now
-  />
 
   async function handleCandidatesUpdate(newCandidates: FileCandidate[]) {
     if (selectedFileIndex === null) return;
@@ -723,7 +716,6 @@ function App() {
                   files={files}
                   onRowClick={handleRowClick}
                   onRemove={handleRemoveFile}
-                  onPropagateMatch={() => { }}
                 />
               </section>
             )}
