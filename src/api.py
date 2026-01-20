@@ -20,6 +20,7 @@ try:
     from src.renamer import renamer
     from src.config import config, CONFIG_PATH
     from src.undo import undo_manager
+    from src.api_clients.tmdb import tmdb_client
 except Exception as e:
     logger.critical(f"Startup Failure: {e}", exc_info=True)
     raise e
@@ -109,25 +110,120 @@ async def scan_files(request: ScanRequest):
             search_targets.extend(scan_directory(path, min_video_size_mb=float(request.min_size_mb)))
 
         
-        for file_path in search_targets:
-            # Parse filename
+        folder_cache: Dict[Path, Dict[str, Any]] = {}
+
+    # Parallel processing setup
+    semaphore = asyncio.Semaphore(5)
+    folder_cache: Dict[Path, Dict[str, Any]] = {} # Parent Path -> {tmdb_id, title, type}
+    season_cache: Dict[tuple, Dict[str, Any]] = {} # (tmdb_id, season_num) -> Full Season Data
+
+    # Group files by directory to ensure context flows from the first file to the rest
+    files_by_dir: Dict[Path, List[Path]] = {}
+    for p in search_targets:
+        if p.parent not in files_by_dir:
+            files_by_dir[p.parent] = []
+        files_by_dir[p.parent].append(p)
+
+    async def process_file(file_path: Path):
+        async with semaphore:
             try:
+                # print(f"[DEBUG] Processing {file_path.name}...") 
+                
+                # 1. Parse Initial Metadata
                 metadata = renamer.parse_filename(file_path)
                 
-                # Get candidates from API
-                candidates_raw = await renamer.get_candidates(metadata)
+                # 2. Check Folder Cache (Smart Context)
+                # Avoid caching for generic mixed directories
+                parent_name = file_path.parent.name
+                is_mixed_dir = parent_name.lower() in ['downloads', 'desktop', 'documents', 'unsorted', 'incoming']
                 
-                # Convert to FileCandidate models
+                using_cache = False
+                if not is_mixed_dir and file_path.parent in folder_cache:
+                    cached = folder_cache[file_path.parent]
+                    if cached.get('type') == 'tv':
+                         # Validate: Does the filename seemingly match the cached context?
+                         # If filename has "Breaking Bad" and cache is "Pokemon", DO NOT USE CACHE.
+                         # If filename is "S01E01", USE CACHE.
+                         
+                         parsed_title = metadata.get('title', '').strip()
+                         cached_title = cached.get('title', '').strip()
+                         
+                         # Normalization for check
+                         p_norm = parsed_title.lower().replace('.', ' ').replace('-', ' ')
+                         c_norm = cached_title.lower().replace('.', ' ').replace('-', ' ')
+                         
+                         # Heuristic: If parsed title exists and is NOT a substring of cached (and vice versa) -> Mismatch
+                         # But be careful of partials.
+                         should_use = True
+                         if parsed_title:
+                             # If the parsed title is substantial (len > 3) and completely different
+                             if len(parsed_title) > 2 and (p_norm not in c_norm and c_norm not in p_norm):
+                                  should_use = False
+                                  # print(f"[DEBUG] Cache Mismatch for {file_path.name}: Parsed '{parsed_title}' vs Cache '{cached_title}'")
+
+                         if should_use:
+                            metadata['title'] = cached['title']
+                            if 'tmdb_id' in cached:
+                                metadata['tmdb_id'] = cached['tmdb_id']
+                            if 'show_metadata' in cached:
+                                metadata['show_metadata'] = cached['show_metadata']
+                            using_cache = True
+
+                
+                # 3. Check/Fetch Season Cache (Batching)
+                cached_season_data = None
+                tmdb_id = metadata.get('tmdb_id')
+                season_num = metadata.get('season')
+                
+                if metadata.get('type') == 'tv' and tmdb_id and season_num is not None:
+                    cache_key = (tmdb_id, season_num)
+                    if cache_key in season_cache:
+                        cached_season_data = season_cache[cache_key]
+                    else:
+                        # Fetch full season!
+                        from src.api_clients.tmdb import tmdb_client
+                        try:
+                            # print(f"[DEBUG] Batch fetching Season {season_num} for ID {tmdb_id}")
+                            season_data = await tmdb_client.get_season_details(tmdb_id, season_num)
+                            if season_data:
+                                season_cache[cache_key] = season_data
+                                cached_season_data = season_data
+                        except Exception as e:
+                             print(f"Failed to batch fetch season {season_num}: {e}")
+
+                # 4. Get Candidates (passing cached data)
+                # Pass show_metadata if we have it to skip search_tv
+                cached_show = metadata.get('show_metadata')
+                candidates_raw = await renamer.get_candidates(
+                    metadata, 
+                    cached_season_data=cached_season_data,
+                    cached_show_metadata=cached_show
+                )
+                
+                # Update Folder Cache if we found a good TV match and didn't have one
+                if candidates_raw and candidates_raw[0].get('type') == 'tv':
+                     # Only start caching if we didn't have ID before AND matches rules
+                     if not is_mixed_dir and file_path.parent not in folder_cache:
+                         print(f"[DEBUG] CACHE SET for {file_path.parent.name}: {candidates_raw[0]['title']}")
+                         folder_cache[file_path.parent] = {
+                             'type': 'tv',
+                             'title': candidates_raw[0]['title'],
+                             'tmdb_id': candidates_raw[0]['id'],
+                             'show_metadata': candidates_raw[0] # Verify this structure has what we need
+                         }
+                     elif 'tmdb_id' not in folder_cache[file_path.parent]:
+                          # Update if we had title but no ID
+                          folder_cache[file_path.parent]['tmdb_id'] = candidates_raw[0]['id']
+                          folder_cache[file_path.parent]['show_metadata'] = candidates_raw[0]
+
+                # 5. Build Response Model
                 candidates = []
                 for c in candidates_raw:
-                    # Add TMDB poster URL if available
                     poster_url = None
                     if c.get('poster_path'):
                         if c.get('type') in ['movie', 'tv']:
-                            # TMDB returns relative path
                             poster_url = f"https://image.tmdb.org/t/p/w200/{c.get('poster_path').lstrip('/')}"
                         elif c.get('type') in ['book', 'audiobook']:
-                            # Google Books / Audnexus returns full URL
                             poster_url = c.get('poster_path')
                     
                     candidates.append(FileCandidate(
@@ -141,39 +237,73 @@ async def scan_files(request: ScanRequest):
                         author=c.get('author')
                     ))
                 
-                # Propose path using first candidate (default selection)
+                # Propose path
                 selected_metadata = metadata.copy()
                 if candidates:
                     selected_metadata.update(candidates_raw[0])
                 
-                # Get relative path from renamer
                 new_relative = renamer.propose_new_path(file_path, selected_metadata)
                 
-                # Determine base directory
                 base_dir = config.DEST_DIR
                 ftype = selected_metadata.get('type')
-                if ftype == 'movie':
-                    base_dir = config.MOVIE_DIR
-                elif ftype == 'tv':
-                    base_dir = config.TV_DIR
-                elif ftype == 'book':
-                    base_dir = config.BOOK_DIR
-                elif ftype == 'audiobook':
-                    base_dir = config.AUDIOBOOK_DIR
+                if ftype == 'movie': base_dir = config.MOVIE_DIR
+                elif ftype == 'tv': base_dir = config.TV_DIR
+                elif ftype == 'book': base_dir = config.BOOK_DIR
+                elif ftype == 'audiobook': base_dir = config.AUDIOBOOK_DIR
                     
                 proposed_path = str(base_dir / new_relative)
                 
-                files.append(ScannedFile(
+                return ScannedFile(
                     original_path=str(file_path),
                     filename=file_path.name,
                     file_type=ftype or 'unknown',
                     candidates=candidates,
                     selected_index=0,
                     proposed_path=proposed_path
-                ))
+                )
             except Exception as e:
                 print(f"Error processing {file_path}: {e}")
-                continue
+                return None
+
+    # Execute by directory group
+    file_results = []
+    
+    for dir_path, dir_files in files_by_dir.items():
+        if not dir_files:
+            continue
+            
+        # Sort files by name to ensure consistent order (helps with finding S01E01 etc first)
+        dir_files.sort(key=lambda p: p.name)
+        
+        # Phase 1: Context Priming
+        # Process files sequentially until we establish a valid TV show context in folder_cache
+        # or we run out of files.
+        processed_indices = set()
+        
+        # Try up to 3 files to establish context (or all if small folder)
+        # If we find a match, we stop priming and go to parallel.
+        for i, file_p in enumerate(dir_files):
+            # Check if cache is established
+            if dir_path in folder_cache and folder_cache[dir_path].get('type') == 'tv':
+                # Cache is ready! Switch to parallel for the rest
+                break
+            
+            # Process strictly one by one
+            res = await process_file(file_p)
+            file_results.append(res)
+            processed_indices.add(i)
+            
+            # If this file resulted in a cache hit, the loop check next iter will break.
+        
+        # Phase 2: Parallel Processing
+        # Process all remaining files
+        remaining_files = [f for i, f in enumerate(dir_files) if i not in processed_indices]
+        if remaining_files:
+            rest_results = await asyncio.gather(*[process_file(p) for p in remaining_files])
+            file_results.extend(rest_results)
+    
+    # Filter out None results
+    files = [f for f in file_results if f]
     
     # Just use first path or config as source_dir for display
     display_source = str(scan_paths[0]) if scan_paths else str(config.SOURCE_DIR)
@@ -185,7 +315,7 @@ async def scan_files(request: ScanRequest):
     )
 
 @app.post("/execute")
-async def execute_moves(request: ExecuteRequest):
+def execute_moves(request: ExecuteRequest):
     import shutil
     
     from src import filesystem
@@ -285,6 +415,59 @@ async def execute_moves(request: ExecuteRequest):
         logger.info(f"Executed batch move of {len(moved)} files.")
 
     return {"moved": moved, "errors": errors}
+
+class SearchRequest(BaseModel):
+    query: str
+    type: str
+
+@app.post("/search")
+async def search(request: SearchRequest):
+    try:
+        # Construct metadata for renamer
+        metadata = {
+            'title': request.query,
+            'type': request.type
+        }
+        
+        # Determine year if possible (simple heuristic)
+        # If user typed "Movie Name 2024", extract 2024
+        import re
+        year_match = re.search(r'\b(19|20)\d{2}\b', request.query)
+        if year_match:
+            metadata['year'] = int(year_match.group(0))
+            # Clean title? Maybe not needed as search APIs usually handle it.
+        
+        candidates_raw = await renamer.get_candidates(metadata)
+        
+        # Convert to FileCandidate models (duplicated from scan_files)
+        candidates = []
+        for c in candidates_raw:
+            # Add TMDB poster URL if available
+            poster_url = None
+            if c.get('poster_path'):
+                if c.get('type') in ['movie', 'tv']:
+                    # TMDB returns relative path
+                    poster_url = f"https://image.tmdb.org/t/p/w200/{c.get('poster_path').lstrip('/')}"
+                elif c.get('type') in ['book', 'audiobook']:
+                    # Google Books / Audnexus returns full URL
+                    poster_url = c.get('poster_path')
+            
+            candidates.append(FileCandidate(
+                title=c.get('title', 'Unknown'),
+                year=c.get('year'),
+                overview=c.get('overview'),
+                poster_url=poster_url,
+                id=c.get('id'),
+                type=c.get('type', 'unknown'),
+                score=c.get('score'),
+                author=c.get('author')
+            ))
+            
+        return {"candidates": candidates}
+        
+    except Exception as e:
+        logger.error(f"Search failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
     
 class PreviewRenameRequest(BaseModel):
     original_path: str
@@ -299,6 +482,28 @@ async def preview_rename(request: PreviewRenameRequest):
     if request.selected_candidate:
         metadata.update(request.selected_candidate)
         
+    # Lazy Fetch: If we have an ID but lack a specific episode title (common in forced propagation), fetch it.
+    if metadata.get('type') == 'tv' and metadata.get('id'): # 'id' maps to tmdb_id usually, but ensure consistency
+        # Check if title is generic
+        curr_title = metadata.get('episode_title', '')
+        is_generic = not curr_title or curr_title.lower().startswith('episode ')
+        
+        if is_generic and metadata.get('season') and metadata.get('episode'):
+             try:
+                 # Map 'id' to tmdb_id if needed, candidate usually has 'id'
+                 tmdb_id = metadata['id']
+                 details = await tmdb_client.get_episode_details(
+                     tmdb_id, 
+                     metadata['season'], 
+                     metadata['episode']
+                 )
+                 if details:
+                     metadata['episode_title'] = details.get('name')
+                     if details.get('air_date'):
+                         metadata['year'] = int(details['air_date'].split('-')[0])
+             except Exception as e:
+                 logger.warning(f"Failed to lazy fetch episode details for {original.name}: {e}")
+
     # Get proposed path (relative)
     new_relative = renamer.propose_new_path(original, metadata)
     
@@ -397,20 +602,51 @@ async def update_config(update: ConfigUpdate):
 
 # ============== Run Server ==============
 
+# ============== Run Server ==============
+
+# Global state for heartbeat
+last_heartbeat = 0
+HEARTBEAT_TIMEOUT = 30 # Seconds
+
+@app.post("/heartbeat")
+async def heartbeat():
+    global last_heartbeat
+    import time
+    last_heartbeat = time.time()
+    return {"status": "ok"}
+
 def start_server():
     """Start the API server (called by Tauri)"""
     import uvicorn
     import argparse
     import sys
+    import threading
+    import time
+
+    global last_heartbeat
+    last_heartbeat = time.time() # Initialize
 
     parser = argparse.ArgumentParser(description="Sortify API Server")
     parser.add_argument("--port", type=int, default=8742, help="Port to bind to")
     
     # Check if we are being called correctly
     args, unknown = parser.parse_known_args()
-    
     port = args.port
-    # If standard execution (e.g. from CLI without args), might default to 8742 which is fine.
+    
+    logger.info(f"Starting API server on port {port}")
+
+    # Process Management: Monitor Heartbeat
+    def monitor_heartbeat():
+        while True:
+            time.sleep(2)
+            if time.time() - last_heartbeat > HEARTBEAT_TIMEOUT:
+                logger.info(f"No heartbeat for {HEARTBEAT_TIMEOUT}s. Shutting down...")
+                # We need to force exit, os._exit is safer for threads
+                import os
+                os._exit(0)
+
+    # Start monitor in background
+    threading.Thread(target=monitor_heartbeat, daemon=True).start()
 
     uvicorn.run(app, host="127.0.0.1", port=port, log_level="warning")
 

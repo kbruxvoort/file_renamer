@@ -102,3 +102,15 @@ class TestRenamerProposePath:
         # "Mission: Impossible" -> "Mission - Impossible"
         expected = Path("Mission - Impossible (1996)/Mission - Impossible (1996).mkv")
         assert new_path == expected
+
+    def test_parse_filename_1080p(self, renamer):
+        """Ensure 1080p is not parsed as year 1080."""
+        # This checks the parse_filename logic directly
+        info = renamer.parse_filename("Another.Simple.Favor.1080p.mkv")
+        # Should NOT have year=1080
+        # Might find no year, or correctly find nothing.
+        assert info.get('year') != 1080
+        
+        # Test valid year
+        info_valid = renamer.parse_filename("Another.Simple.Favor.2018.1080p.mkv")
+        assert info_valid.get('year') == 2018

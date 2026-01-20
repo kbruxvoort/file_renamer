@@ -1,16 +1,8 @@
 import { clsx } from 'clsx';
 import { Film, Tv, Book, AlertCircle, CheckCircle, ArrowRight, Edit2, Headphones, Trash2 } from 'lucide-react';
 import type { FileCandidate } from '../api';
+import type { FileItem } from '../types';
 
-export interface FileItem {
-    original_path: string;
-    filename: string;
-    file_type: string;
-    candidates: FileCandidate[];
-    selected_index: number;
-    proposed_path: string | null;
-    confirmed?: boolean;
-}
 
 interface PreviewTableProps {
     files: FileItem[];

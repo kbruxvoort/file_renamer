@@ -8,6 +8,7 @@ export interface FileCandidate {
     type: string;
     score?: number;
     author?: string;
+    episode_title?: string;
 }
 
 export interface ScannedFile {
@@ -17,6 +18,15 @@ export interface ScannedFile {
     candidates: FileCandidate[];
     selected_index: number;
     proposed_path?: string;
+}
+
+export async function sendHeartbeat(): Promise<void> {
+    try {
+        const baseUrl = await getApiBase();
+        await fetch(`${baseUrl}/heartbeat`, { method: 'POST' });
+    } catch (e) {
+        console.error("Heartbeat failed:", e);
+    }
 }
 
 export interface ScanResponse {
@@ -31,6 +41,14 @@ let apiBaseUrl: string | null = null;
 
 async function getApiBase(): Promise<string> {
     if (apiBaseUrl) return apiBaseUrl;
+
+    // In development, prefer local python server if available
+    // if (import.meta.env.DEV) {
+    //    console.log("Dev mode: Using local API at 8742");
+    //    apiBaseUrl = "http://127.0.0.1:8742";
+    //    return apiBaseUrl;
+    // }
+
     try {
         const port = await invoke<number>("get_api_port");
         apiBaseUrl = `http://127.0.0.1:${port}`;

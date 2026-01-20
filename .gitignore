@@ -36,3 +36,5 @@ gui/~
 
 # Test Fixtures
 tests/fixtures/Downloads/
+
+tests/fixtures/Sandbox/

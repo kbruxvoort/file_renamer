@@ -45,3 +45,11 @@ renamer config-set DEST_DIR "C:\Media"
 ```
 
 Config is stored in `~/.renamer_config.json`.
+
+## Version Management
+
+To bump the application version across all files (Tauri, Cargo, Python, Package.json):
+
+```bash
+python scripts/bump_version.py 0.1.3
+```

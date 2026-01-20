@@ -1,7 +1,7 @@
 use tauri_plugin_shell::ShellExt;
 use tauri_plugin_shell::process::CommandEvent;
 use std::sync::{Arc, Mutex};
-use tauri::{Manager, Emitter};
+use tauri::Manager;
 
 #[derive(Default)]
 struct ApiState {
@@ -43,7 +43,7 @@ pub fn run() {
             
             // Spawn sidecar
             tauri::async_runtime::spawn(async move {
-                let (mut rx, mut child) = handle.shell().sidecar("renamer-api")
+                let (mut rx, _child) = handle.shell().sidecar("renamer-api")
                     .expect("failed to create sidecar")
                     .args(["--port", &port.to_string()])
                     .spawn()
@@ -52,10 +52,10 @@ pub fn run() {
                 while let Some(event) = rx.recv().await {
                     match event {
                         CommandEvent::Stdout(line) => {
-                             // log::info!("[PY]: {}", String::from_utf8_lossy(&line));
+                             log::info!("[PY]: {}", String::from_utf8_lossy(&line));
                         }
                         CommandEvent::Stderr(line) => {
-                             // log::warn!("[PY]: {}", String::from_utf8_lossy(&line));
+                             log::warn!("[PY]: {}", String::from_utf8_lossy(&line));
                         }
                         _ => {}
                     }

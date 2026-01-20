@@ -1,10 +1,11 @@
 import { useState, useEffect } from 'react';
 import { clsx } from 'clsx';
 import { FilePicker } from './components/FilePicker';
-import { PreviewTable, type FileItem } from './components/PreviewTable';
+import { type FileItem } from './types';
+import { GroupedFileList } from './components/GroupedFileList';
 import { MatchSelectionModal } from './components/MatchSelectionModal';
 import { SettingsPage } from './components/SettingsPage';
-import { scanDirectory, previewRename, getConfig, undoLastOperation, getHistory, type FileCandidate } from './api';
+import { scanDirectory, previewRename, getConfig, undoLastOperation, getHistory, sendHeartbeat, type FileCandidate } from './api';
 import { Loader2, Settings as SettingsIcon, Home, RefreshCw, FolderOpen, Play, RotateCcw } from 'lucide-react';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { getVersion } from '@tauri-apps/api/app';
@@ -19,7 +20,7 @@ function App() {
   const [appVersion, setAppVersion] = useState<string | null>(null);
 
   const [files, setFiles] = useState<FileItem[]>([]);
-  const [loading, setLoading] = useState(false);
+  const [loadingMessage, setLoadingMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isDragging, setIsDragging] = useState(false);
   const [hasScanned, setHasScanned] = useState(false);
@@ -98,6 +99,14 @@ function App() {
     checkForUpdates();
   }, []);
 
+  // Heartbeat
+  useEffect(() => {
+    const interval = setInterval(() => {
+      sendHeartbeat();
+    }, 5000);
+    return () => clearInterval(interval);
+  }, []);
+
   // Reload config when switching back to scanner
   useEffect(() => {
     if (view === 'scanner') {
@@ -117,7 +126,7 @@ function App() {
       setSourcePath(`${paths.length} items selected`);
     }
 
-    setLoading(true);
+    setLoadingMessage("Scanning directory...");
     setError(null);
     setFiles([]);
     setHasScanned(false);
@@ -137,7 +146,7 @@ function App() {
     } catch (err: any) {
       setError(err.message);
     } finally {
-      setLoading(false);
+      setLoadingMessage(null);
     }
   }
 
@@ -178,10 +187,100 @@ function App() {
     }
   }
 
-  function handleConfirmSelection() {
+  async function propagateMatchToFolder(sourceIndex: number, candidateId: number | undefined): Promise<number[]> {
+    if (candidateId === undefined) return [];
+
+    const sourceFile = files[sourceIndex];
+    if (!sourceFile) return [];
+    const sourceCand = sourceFile.candidates[sourceFile.selected_index];
+    if (!sourceCand) return [];
+
+    // Get folder path
+    const platformSep = sourceFile.original_path.includes('\\') ? '\\' : '/';
+    const sourceDir = sourceFile.original_path.substring(0, sourceFile.original_path.lastIndexOf(platformSep));
+
+    const updates: { index: number, candidateIndex: number }[] = [];
+    const newFiles = [...files]; // Clone for mutation during loop
+
+    files.forEach((f, idx) => {
+      if (idx === sourceIndex) return;
+
+      // Check if same folder
+      const fDir = f.original_path.substring(0, f.original_path.lastIndexOf(platformSep));
+      if (fDir !== sourceDir) return;
+
+      // Try to find matching candidate ID
+      let candIdx = f.candidates.findIndex(c => c.id === candidateId);
+
+      // If NOT found, Synthesize it! (Force Propagation)
+      if (candIdx === -1) {
+        // Clone source candidate but strip episode-specifics
+        // We want the Show Metadata (Title, Year, ID), but not "Episode Title" of the source
+        const { episode_title, overview, ...baseCand } = sourceCand as any;
+
+        // Need to cast to satisfy type if needed, or just construct object
+        const newCand = {
+          ...baseCand,
+          // We intentionally omit info that might be specific to the source episode
+          episode_title: undefined,
+          overview: undefined
+        };
+
+        // Append to this file's candidates
+        const newCands = [...f.candidates, newCand];
+        newFiles[idx] = { ...newFiles[idx], candidates: newCands };
+        candIdx = newCands.length - 1; // It's the last one
+      }
+
+      // If we found it (or created it), and it's not already selected
+      if (candIdx !== -1 && candIdx !== newFiles[idx].selected_index) {
+        updates.push({ index: idx, candidateIndex: candIdx });
+      }
+    });
+
+    if (updates.length > 0) {
+      // Parallel fetch previews
+      await Promise.all(updates.map(async (up) => {
+        newFiles[up.index].selected_index = up.candidateIndex;
+        newFiles[up.index].confirmed = true; // Auto-confirm propagated matches
+
+        try {
+          const cand = newFiles[up.index].candidates[up.candidateIndex];
+          // Determine path
+          const p = await previewRename(newFiles[up.index].original_path, cand);
+          if (p) newFiles[up.index].proposed_path = p;
+        } catch (e) {
+          console.error(e);
+        }
+      }));
+
+      setFiles(newFiles);
+      console.log(`Propagated match to ${updates.length} files.`);
+      return updates.map(u => u.index);
+    }
+    return [];
+  }
+
+  async function handleConfirmSelection() {
     if (selectedFileIndex === null) return;
 
-    // Mark current as confirmed
+    // Get info for propagation BEFORE clearing index
+    const currentFile = files[selectedFileIndex];
+    if (!currentFile) return;
+
+    const selectedCand = currentFile.candidates[currentFile.selected_index];
+    const currentIdx = selectedFileIndex;
+
+    // We update local var to reflect future state for logic
+    const propagatedIndices: number[] = [];
+
+    // Trigger Propagation Logic (Wait for it so we know what matches)
+    if (selectedCand?.id) {
+      const indices = await propagateMatchToFolder(currentIdx, selectedCand.id);
+      propagatedIndices.push(...indices);
+    }
+
+    // Now update state for the current file too
     setFiles(prev => prev.map((f, idx) => {
       if (idx !== selectedFileIndex) return f;
       return { ...f, confirmed: true };
@@ -189,30 +288,48 @@ function App() {
 
     // If in review mode, find next uncertain item
     if (isReviewMode) {
-      // Find next uncertain index STARTING AFTER current index
+      // Logic: Index > Current, NOT Propagated, NOT Confirmed, NOT Unambiguous
       const nextUncertain = files.findIndex((f, idx) =>
-        idx > selectedFileIndex && !f.confirmed && f.candidates.length > 1
+        idx > selectedFileIndex &&
+        !f.confirmed &&
+        !propagatedIndices.includes(idx) &&
+        f.candidates.length > 1
       );
 
       if (nextUncertain !== -1) {
         setSelectedFileIndex(nextUncertain);
       } else {
-        // No more items after this one. Check from beginning just in case?
-        // Or just end review.
-        const anyUncertain = files.findIndex(f => !f.confirmed && f.candidates.length > 1);
-        if (anyUncertain !== -1 && anyUncertain !== selectedFileIndex) {
+        const anyUncertain = files.findIndex((f, idx) =>
+          !f.confirmed &&
+          !propagatedIndices.includes(idx) &&
+          idx !== selectedFileIndex &&
+          f.candidates.length > 1
+        );
+
+        if (anyUncertain !== -1) {
           setSelectedFileIndex(anyUncertain);
         } else {
           setIsReviewMode(false);
           setSelectedFileIndex(null);
-          alert("Review complete!");
+          // alert("Review complete!");
         }
       }
     } else {
-      // Normal mode: just close
       setSelectedFileIndex(null);
     }
   }
+
+
+
+  // ... (rest of render)
+
+  // Replace PreviewTable with GroupedFileList
+  <GroupedFileList
+    files={files}
+    onRowClick={handleRowClick}
+    onRemove={handleRemoveFile}
+    onPropagateMatch={() => { }} // Propagation handled in modal confirm for now
+  />
 
   async function handleCandidatesUpdate(newCandidates: FileCandidate[]) {
     if (selectedFileIndex === null) return;
@@ -266,7 +383,7 @@ function App() {
     if (files.length === 0) return;
 
     // Optimistic UI update or global loader
-    setLoading(true);
+    setLoadingMessage("Moving files... This may take a moment for large libraries.");
 
     // Prepare execute request
     const payload = {
@@ -289,7 +406,7 @@ function App() {
         handleSelection(selectedPaths);
       } else {
         setFiles([]);
-        setLoading(false);
+        setLoadingMessage(null);
       }
 
       // Update history state
@@ -297,7 +414,7 @@ function App() {
 
     } catch (err: any) {
       setError("Failed to move files: " + err.message);
-      setLoading(false);
+      setLoadingMessage(null);
     }
   }
 
@@ -347,7 +464,7 @@ function App() {
   async function handleUndo() {
     if (!confirm("Are you sure you want to undo the last batch of moves?")) return;
 
-    setLoading(true);
+    setLoadingMessage("Undoing last operation...");
     try {
       const result = await undoLastOperation();
       if (result.success) {
@@ -357,7 +474,7 @@ function App() {
           handleSelection(selectedPaths);
         } else {
           setFiles([]);
-          setLoading(false);
+          setLoadingMessage(null);
         }
 
         // Re-check info
@@ -365,11 +482,11 @@ function App() {
 
       } else {
         alert(`Undo Failed: ${result.message}`);
-        setLoading(false);
+        setLoadingMessage(null);
       }
     } catch (e: any) {
       alert("Undo failed: " + e.message);
-      setLoading(false);
+      setLoadingMessage(null);
     }
   }
 
@@ -446,7 +563,7 @@ function App() {
           <div className="space-y-8 animate-fade-in max-w-6xl mx-auto">
 
             {/* Initial Empty State / Scanner controls */}
-            {!loading && !hasScanned && !error && (
+            {!loadingMessage && !hasScanned && !error && (
               <div className="flex flex-col items-center justify-center py-20 bg-gray-800/30 border border-gray-700/50 rounded-3xl border-dashed">
                 <div className="bg-gray-800 p-4 rounded-full mb-6">
                   <FolderOpen size={48} className="text-blue-400" />
@@ -501,7 +618,7 @@ function App() {
             )}
 
             {/* No Files Found State */}
-            {!loading && hasScanned && files.length === 0 && !error && (
+            {!loadingMessage && hasScanned && files.length === 0 && !error && (
               <div className="flex flex-col items-center justify-center py-20 bg-gray-800/30 border border-gray-700/50 rounded-3xl border-dashed">
                 <div className="bg-gray-800 p-4 rounded-full mb-6">
                   <FolderOpen size={48} className="text-gray-500" />
@@ -537,16 +654,16 @@ function App() {
             )}
 
             {/* Loading State */}
-            {loading && (
+            {loadingMessage && (
               <div className="flex flex-col items-center justify-center py-32 text-gray-400">
                 <Loader2 className="animate-spin mb-4 text-blue-500" size={48} />
-                <p className="text-lg font-medium text-gray-300">Scanning directory...</p>
+                <p className="text-lg font-medium text-gray-300">{loadingMessage}</p>
                 <p className="text-sm">This might take a moment depending on library size.</p>
               </div>
             )}
 
             {/* Results */}
-            {!loading && files.length > 0 && (
+            {!loadingMessage && files.length > 0 && (
               <section className="animate-fade-in space-y-4">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-4">
@@ -602,10 +719,11 @@ function App() {
                   </button>
                 </div>
 
-                <PreviewTable
+                <GroupedFileList
                   files={files}
                   onRowClick={handleRowClick}
                   onRemove={handleRemoveFile}
+                  onPropagateMatch={() => { }}
                 />
               </section>
             )}

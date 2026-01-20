@@ -54,5 +54,19 @@ class TMDBClient:
             response.raise_for_status()
             return response.json()
 
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
+    async def get_season_details(self, tv_id: int, season_number: int) -> Dict[str, Any]:
+        """Fetch details for an entire season (including all episodes)"""
+        async with httpx.AsyncClient() as client:
+            params = self.params.copy()
+            url = f"{self.BASE_URL}/tv/{tv_id}/season/{season_number}"
+            
+            response = await client.get(url, params=params)
+            if response.status_code == 404:
+                return {}
+            
+            response.raise_for_status()
+            return response.json()
+
 # Global instance
 tmdb_client = TMDBClient()
