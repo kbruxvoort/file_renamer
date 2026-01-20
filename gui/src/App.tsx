@@ -568,13 +568,15 @@ function App() {
               </button>
             )}
 
-            {/* Dev/Mock Trigger (Hidden or obvious for now since user requested it) */}
-            <button
-              onClick={mockUpdate}
-              className="mt-4 text-[10px] text-gray-700 hover:text-gray-500 uppercase tracking-widest text-center w-full"
-            >
-              Test Update UI
-            </button>
+            {/* Dev/Mock Trigger (Hidden in Prod) */}
+            {import.meta.env.DEV && (
+              <button
+                onClick={mockUpdate}
+                className="mt-4 text-[10px] text-gray-700 hover:text-gray-500 uppercase tracking-widest text-center w-full"
+              >
+                Test Update UI
+              </button>
+            )}
           </div>
         </div>
       </aside>
