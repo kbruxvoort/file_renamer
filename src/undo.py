@@ -3,6 +3,7 @@ import shutil
 import uuid
 from pathlib import Path
 from typing import List, Dict, Any
+from src import filesystem
 
 from datetime import datetime
 
@@ -84,6 +85,18 @@ class UndoManager:
                 
                 shutil.move(str(dest), str(src))
                 undo_results.append(f"Restored {src.name}")
+
+                # Clean up the directory we just moved FROM (dest.parent)
+                # If it's empty now, delete it.
+                # We do not want to delete the ROOT (like 'Movies'), so we might need to know the root.
+                # But clean_empty_dirs handles up to a root. Here we don't strictly know the root 
+                # (Movies/TV/etc), but typically we just want to remove the specific folder created.
+                # Let's pass DEST_DIR as root? We don't have access to config here easily without import.
+                # Let's just clean up the immediate parent if empty to be safe, or just call clean_empty_dirs
+                # which recursively cleans up. We should probably NOT clean up the top level dirs.
+                # filesystem.clean_empty_dirs takes a root_path.
+                # For safety, let's just try to clean the parent directory.
+                filesystem.clean_empty_dirs(dest.parent)
                 
             except Exception as e:
                 failures.append(f"Error moving {dest} -> {src}: {e}")

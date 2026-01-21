@@ -5,16 +5,27 @@ import { type FileItem } from './types';
 import { GroupedFileList } from './components/GroupedFileList';
 import { MatchSelectionModal } from './components/MatchSelectionModal';
 import { SettingsPage } from './components/SettingsPage';
-import { UpdateModal } from './components/UpdateModal'; // New
+import { UpdateModal } from './components/UpdateModal';
+import { UndoPreviewModal } from './components/UndoPreviewModal'; // New
 import { scanDirectory, previewRename, getConfig, undoLastOperation, getHistory, sendHeartbeat, type FileCandidate } from './api';
-import { Loader2, Settings as SettingsIcon, Home, RefreshCw, FolderOpen, Play, RotateCcw, ArrowUpCircle } from 'lucide-react'; // Added ArrowUpCircle
+import { Loader2, Settings as SettingsIcon, Home, RefreshCw, FolderOpen, Play, RotateCcw, ArrowUpCircle, PanelLeftClose, PanelLeftOpen } from 'lucide-react';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { getVersion } from '@tauri-apps/api/app';
-import { useUpdater } from './hooks/useUpdater'; // New hook
+import { useUpdater } from './hooks/useUpdater';
 
 function App() {
   // Navigation
   const [view, setView] = useState<'scanner' | 'settings'>('scanner');
+
+  // UI State
+  const [isSidebarOpen, setIsSidebarOpen] = useState(() => {
+    const saved = localStorage.getItem('sidebarOpen');
+    return saved !== null ? JSON.parse(saved) : true;
+  });
+
+  useEffect(() => {
+    localStorage.setItem('sidebarOpen', JSON.stringify(isSidebarOpen));
+  }, [isSidebarOpen]);
 
   const [sourcePath, setSourcePath] = useState<string | null>(null); // Display Label
   const [selectedPaths, setSelectedPaths] = useState<string[]>([]); // Actual paths
@@ -30,8 +41,11 @@ function App() {
   // Modal state
   const [selectedFileIndex, setSelectedFileIndex] = useState<number | null>(null);
 
-  // Undo visibility
+  // Undo state
   const [hasHistory, setHasHistory] = useState(false);
+  const [isUndoModalOpen, setIsUndoModalOpen] = useState(false);
+  const [undoBatch, setUndoBatch] = useState<any>(null);
+  const [isUndoing, setIsUndoing] = useState(false);
 
   // Updater
   const {
@@ -50,9 +64,6 @@ function App() {
   useEffect(() => {
     if (updateStatus === 'available') {
       // setIsUpdateModalOpen(true); // Uncomment to auto-open
-      // For now, we rely on the user clicking the sidebar button or a toast (not impl yet)
-      // But let's auto-open for visibility if desired.
-      // Let's NOT auto-open to be less intrusive, but maybe show a dot.
     }
   }, [updateStatus]);
 
@@ -97,10 +108,6 @@ function App() {
     getVersion().then(setAppVersion).catch(console.error);
   }, []);
 
-  // Update Check (handled by hook, initial check is automatic)
-  // We can just rely on useUpdater's internal useEffect
-
-
   // Heartbeat
   useEffect(() => {
     const interval = setInterval(() => {
@@ -135,14 +142,72 @@ function App() {
 
     try {
       const result = await scanDirectory(paths);
-      const uiFiles: FileItem[] = result.files.map(f => ({
-        original_path: f.original_path,
-        filename: f.filename,
-        file_type: f.file_type,
-        candidates: f.candidates,
-        selected_index: f.selected_index,
-        proposed_path: f.proposed_path || null
-      }));
+      const uiFiles: FileItem[] = result.files.map(f => {
+        // Auto-confirm logic based on title similarity
+        let shouldAutoConfirm = false;
+
+        if (f.candidates.length === 0) {
+          shouldAutoConfirm = false; // No match
+        } else if (f.candidates.length === 1) {
+          shouldAutoConfirm = true; // Only one option
+        } else {
+          // Multiple candidates - check if first is a confident match
+          const firstCand = f.candidates[0];
+
+          // Extract title from filename for comparison
+          const filenameLower = f.filename.toLowerCase()
+            .replace(/\.[^.]+$/, '') // Remove extension
+            .replace(/[._-]/g, ' ') // Normalize separators
+            .replace(/\b[sS]\d{1,2}[eE]\d{1,3}\b/g, '') // Remove S01E02
+            .replace(/\b\d{1,2}[xX]\d{1,3}\b/g, '') // Remove 1x01
+            .replace(/\b(19|20)\d{2}\b/g, '') // Remove years
+            .replace(/\s+/g, ' ')
+            .trim();
+
+          const candTitleLower = (firstCand.title || '').toLowerCase();
+
+          // Check if there's a strong title match
+          const titlesMatch =
+            filenameLower.includes(candTitleLower) ||
+            candTitleLower.includes(filenameLower.split(' ').slice(0, 3).join(' '));
+
+          // Detect ambiguous same-title variants (One Piece anime/live, The Office US/UK)
+          // Check if any of the top candidates share similar base title but different years
+          const normalizeTitle = (t: string) => t.toLowerCase()
+            .replace(/^the\s+/i, '') // Remove leading "the"
+            .replace(/\s+/g, ' ')
+            .trim();
+
+          const firstTitleNorm = normalizeTitle(firstCand.title || '');
+          let isAmbiguous = false;
+
+          for (let i = 1; i < Math.min(f.candidates.length, 5); i++) {
+            const otherCand = f.candidates[i];
+            const otherTitleNorm = normalizeTitle(otherCand.title || '');
+
+            // Similar title but different year = ambiguous (like The Office 2005 vs 2001)
+            if (firstTitleNorm === otherTitleNorm &&
+              firstCand.year && otherCand.year &&
+              firstCand.year !== otherCand.year) {
+              isAmbiguous = true;
+              break;
+            }
+          }
+
+          // Auto-confirm if titles match AND not ambiguous variants
+          shouldAutoConfirm = titlesMatch && !isAmbiguous;
+        }
+
+        return {
+          original_path: f.original_path,
+          filename: f.filename,
+          file_type: f.file_type,
+          candidates: f.candidates,
+          selected_index: f.selected_index,
+          proposed_path: f.proposed_path || null,
+          confirmed: shouldAutoConfirm
+        };
+      });
       setFiles(uiFiles);
       setHasScanned(true);
     } catch (err: any) {
@@ -167,8 +232,6 @@ function App() {
       return {
         ...file,
         selected_index: candidateIndex,
-        // confirmed: true, // Moved to handleConfirmSelection
-        // Keep old proposed path momentarily or set to loading...
       };
     }));
 
@@ -189,75 +252,75 @@ function App() {
     }
   }
 
-  async function propagateMatchToFolder(sourceIndex: number, candidateId: number | undefined): Promise<number[]> {
-    if (candidateId === undefined) return [];
-
-    const sourceFile = files[sourceIndex];
+  // In-place variant: mutates filesToUpdate directly, doesn't call setFiles
+  async function propagateMatchToFolderInPlace(
+    sourceIndex: number,
+    sourceCand: FileCandidate,
+    filesToUpdate: FileItem[]
+  ): Promise<number[]> {
+    if (!sourceCand?.id) return [];
+    const sourceFile = filesToUpdate[sourceIndex];
     if (!sourceFile) return [];
-    const sourceCand = sourceFile.candidates[sourceFile.selected_index];
-    if (!sourceCand) return [];
 
-    // Get folder path
-    const platformSep = sourceFile.original_path.includes('\\') ? '\\' : '/';
-    const sourceDir = sourceFile.original_path.substring(0, sourceFile.original_path.lastIndexOf(platformSep));
+    function extractTitleFromPath(filePath: string): string {
+      const platformSep = filePath.includes('\\') ? '\\' : '/';
+      const filename = filePath.split(platformSep).pop() || '';
+      return filename.replace(/\.[^.]+$/, '')
+        .replace(/[._-]/g, ' ')
+        .replace(/\b[Ss]\d{1,2}[Ee]\d{1,3}\b/g, '')
+        .replace(/\b\d{1,2}[xX]\d{1,3}\b/g, '')
+        .replace(/\b(19|20)\d{2}\b/g, '')
+        .replace(/\s+/g, ' ').trim().toLowerCase();
+    }
 
-    const updates: { index: number, candidateIndex: number }[] = [];
-    const newFiles = [...files]; // Clone for mutation during loop
+    const sourceTitle = extractTitleFromPath(sourceFile.original_path);
+    const matchedTitle = sourceCand.title?.toLowerCase() || '';
+    const updates: { index: number; candidateIndex: number }[] = [];
 
-    files.forEach((f, idx) => {
+    filesToUpdate.forEach((f, idx) => {
       if (idx === sourceIndex) return;
+      const fileTitle = extractTitleFromPath(f.original_path);
+      const titlesMatch = fileTitle && sourceTitle && (
+        fileTitle.startsWith(sourceTitle) || sourceTitle.startsWith(fileTitle) ||
+        fileTitle.includes(matchedTitle.split(' ').slice(0, 2).join(' ')) ||
+        (matchedTitle && fileTitle.includes(matchedTitle))
+      );
 
-      // Check if same folder
-      const fDir = f.original_path.substring(0, f.original_path.lastIndexOf(platformSep));
-      if (fDir !== sourceDir) return;
+      if (!titlesMatch) return;
 
-      // Try to find matching candidate ID
-      let candIdx = f.candidates.findIndex(c => c.id === candidateId);
-
-      // If NOT found, Synthesize it! (Force Propagation)
-      if (candIdx === -1) {
-        // Clone source candidate but strip episode-specifics
-        // We want the Show Metadata (Title, Year, ID), but not "Episode Title" of the source
-        const { episode_title, overview, ...baseCand } = sourceCand as any;
-
-        // Need to cast to satisfy type if needed, or just construct object
-        const newCand = {
-          ...baseCand,
-          // We intentionally omit info that might be specific to the source episode
-          episode_title: undefined,
-          overview: undefined
-        };
-
-        // Append to this file's candidates
-        const newCands = [...f.candidates, newCand];
-        newFiles[idx] = { ...newFiles[idx], candidates: newCands };
-        candIdx = newCands.length - 1; // It's the last one
+      let candIdx = f.candidates.findIndex(c => c.id === sourceCand.id);
+      if (candIdx === -1 && sourceCand.title) {
+        candIdx = f.candidates.findIndex(c => c.title?.toLowerCase() === sourceCand.title?.toLowerCase());
       }
 
-      // If we found it (or created it), and it's not already selected
-      if (candIdx !== -1 && candIdx !== newFiles[idx].selected_index) {
+      if (candIdx === -1) {
+        const { episode_title, overview, ...baseCand } = sourceCand as any;
+        filesToUpdate[idx] = { ...filesToUpdate[idx], candidates: [...f.candidates, { ...baseCand }] };
+        candIdx = filesToUpdate[idx].candidates.length - 1;
+      }
+
+      // Add update if:
+      // 1. Found a matching candidate AND
+      // 2. Either not already confirmed, OR not at the correct index
+      const needsUpdate = candIdx !== -1 && (
+        !filesToUpdate[idx].confirmed ||
+        candIdx !== filesToUpdate[idx].selected_index
+      );
+
+      if (needsUpdate) {
         updates.push({ index: idx, candidateIndex: candIdx });
       }
     });
 
     if (updates.length > 0) {
-      // Parallel fetch previews
       await Promise.all(updates.map(async (up) => {
-        newFiles[up.index].selected_index = up.candidateIndex;
-        newFiles[up.index].confirmed = true; // Auto-confirm propagated matches
-
+        filesToUpdate[up.index] = { ...filesToUpdate[up.index], selected_index: up.candidateIndex, confirmed: true };
         try {
-          const cand = newFiles[up.index].candidates[up.candidateIndex];
-          // Determine path
-          const p = await previewRename(newFiles[up.index].original_path, cand);
-          if (p) newFiles[up.index].proposed_path = p;
-        } catch (e) {
-          console.error(e);
-        }
+          const cand = filesToUpdate[up.index].candidates[up.candidateIndex];
+          const p = await previewRename(filesToUpdate[up.index].original_path, cand);
+          if (p) filesToUpdate[up.index] = { ...filesToUpdate[up.index], proposed_path: p };
+        } catch (e) { console.error(e); }
       }));
-
-      setFiles(newFiles);
-      console.log(`Propagated match to ${updates.length} files.`);
       return updates.map(u => u.index);
     }
     return [];
@@ -266,32 +329,29 @@ function App() {
   async function handleConfirmSelection() {
     if (selectedFileIndex === null) return;
 
-    // Get info for propagation BEFORE clearing index
     const currentFile = files[selectedFileIndex];
     if (!currentFile) return;
 
     const selectedCand = currentFile.candidates[currentFile.selected_index];
     const currentIdx = selectedFileIndex;
 
-    // We update local var to reflect future state for logic
-    const propagatedIndices: number[] = [];
+    let propagatedIndices: number[] = [];
+    let updatedFiles = [...files];
 
-    // Trigger Propagation Logic (Wait for it so we know what matches)
+    // First, mark current file as confirmed in our local copy
+    updatedFiles[currentIdx] = { ...updatedFiles[currentIdx], confirmed: true };
+
+    // Then propagate to related files (propagation will update updatedFiles in-place)
     if (selectedCand?.id) {
-      const indices = await propagateMatchToFolder(currentIdx, selectedCand.id);
-      propagatedIndices.push(...indices);
+      propagatedIndices = await propagateMatchToFolderInPlace(currentIdx, selectedCand, updatedFiles);
     }
 
-    // Now update state for the current file too
-    setFiles(prev => prev.map((f, idx) => {
-      if (idx !== selectedFileIndex) return f;
-      return { ...f, confirmed: true };
-    }));
+    // Single state update with all changes
+    setFiles(updatedFiles);
 
-    // If in review mode, find next uncertain item
     if (isReviewMode) {
-      // Logic: Index > Current, NOT Propagated, NOT Confirmed, NOT Unambiguous
-      const nextUncertain = files.findIndex((f, idx) =>
+      // Find next uncertain using updatedFiles (not stale state)
+      const nextUncertain = updatedFiles.findIndex((f, idx) =>
         idx > selectedFileIndex &&
         !f.confirmed &&
         !propagatedIndices.includes(idx) &&
@@ -301,7 +361,7 @@ function App() {
       if (nextUncertain !== -1) {
         setSelectedFileIndex(nextUncertain);
       } else {
-        const anyUncertain = files.findIndex((f, idx) =>
+        const anyUncertain = updatedFiles.findIndex((f, idx) =>
           !f.confirmed &&
           !propagatedIndices.includes(idx) &&
           idx !== selectedFileIndex &&
@@ -313,7 +373,6 @@ function App() {
         } else {
           setIsReviewMode(false);
           setSelectedFileIndex(null);
-          // alert("Review complete!");
         }
       }
     } else {
@@ -321,19 +380,12 @@ function App() {
     }
   }
 
-
-
-  // ... (rest of render)
-
-
   async function handleCandidatesUpdate(newCandidates: FileCandidate[]) {
     if (selectedFileIndex === null) return;
 
-    // Get the file to update
     const file = files[selectedFileIndex];
     let newPath = file.proposed_path;
 
-    // If we have candidates, fetch a preview for the first one immediately
     if (newCandidates.length > 0) {
       try {
         newPath = await previewRename(file.original_path, newCandidates[0]);
@@ -355,9 +407,7 @@ function App() {
   }
 
   function handleReviewUncertain() {
-    // Start review mode
     setIsReviewMode(true);
-
     const nextUncertain = files.findIndex((f) =>
       !f.confirmed && f.candidates.length > 1
     );
@@ -377,10 +427,8 @@ function App() {
   async function handleMoveAll() {
     if (files.length === 0) return;
 
-    // Optimistic UI update or global loader
     setLoadingMessage("Moving files... This may take a moment for large libraries.");
 
-    // Prepare execute request
     const payload = {
       files: files.map(f => ({
         original_path: f.original_path,
@@ -392,20 +440,24 @@ function App() {
       const { executeMoves } = await import('./api');
       const result = await executeMoves(payload);
 
-      // Show result (simple alert for now or notification)
+      // Refresh history immediately
+      getHistory().then((hist: any[]) => setHasHistory(hist.length > 0));
+
       alert(`Moved ${result.moved.length} files. ${result.errors.length} errors.`);
 
-      // Clear files that were moved successfully
-      // Rescan if we have selected paths
       if (selectedPaths.length > 0) {
-        handleSelection(selectedPaths);
+        // If user explicitly selected files, maybe ask if they want to clear or rescan?
+        // For now, let's just clear to show success + undo option
+        setFiles([]);
+        setLoadingMessage(null);
+        setHasScanned(false);
+        setSourcePath(null); // Reset title
+        setSelectedPaths([]); // Reset selection
       } else {
         setFiles([]);
         setLoadingMessage(null);
+        setHasScanned(false);
       }
-
-      // Update history state
-      setHasHistory(true);
 
     } catch (err: any) {
       setError("Failed to move files: " + err.message);
@@ -414,11 +466,7 @@ function App() {
   }
 
   function handleSkip() {
-    // Skip current item without confirming
-    // Find next uncertain item STARTING AFTER current index
     if (selectedFileIndex === null) return;
-
-    // Logic similar to handleConfirm but doesn't set confirmed=true
     const nextUncertain = files.findIndex((f, idx) =>
       idx > selectedFileIndex && !f.confirmed && f.candidates.length > 1
     );
@@ -426,18 +474,13 @@ function App() {
     if (nextUncertain !== -1) {
       setSelectedFileIndex(nextUncertain);
     } else {
-      // No more forward matches - Exit wizard
       setIsReviewMode(false);
       setSelectedFileIndex(null);
     }
   }
 
   function handleBack() {
-    // Go to previous uncertain item
     if (selectedFileIndex === null) return;
-
-    // Find LAST uncertain item that is BEFORE current index
-    // Iterate backwards from selectedIndex - 1
     let prevUncertain = -1;
     for (let i = selectedFileIndex - 1; i >= 0; i--) {
       if (!files[i].confirmed && files[i].candidates.length > 1) {
@@ -448,40 +491,61 @@ function App() {
 
     if (prevUncertain !== -1) {
       setSelectedFileIndex(prevUncertain);
-    } else {
-      // No regular previous item.
     }
   }
 
   const selectedFile = selectedFileIndex !== null ? files[selectedFileIndex] : null;
-  const uncertainCount = files.filter(f => !f.confirmed && f.candidates.length > 1).length;
 
-  async function handleUndo() {
-    if (!confirm("Are you sure you want to undo the last batch of moves?")) return;
+  // Count unique groups that need review (by candidate ID or title), not individual files
+  const uncertainGroups = new Set<string>();
+  files.forEach(f => {
+    if (!f.confirmed && f.candidates.length > 1) {
+      const cand = f.candidates[f.selected_index];
+      const groupKey = cand?.id ? `id:${cand.id}` : cand?.title ? `title:${cand.title}` : `file:${f.original_path}`;
+      uncertainGroups.add(groupKey);
+    }
+  });
+  const uncertainCount = uncertainGroups.size;
 
-    setLoadingMessage("Undoing last operation...");
+  async function handleUndoClick() {
+    try {
+      const hist = await getHistory();
+      if (hist && hist.length > 0) {
+        setUndoBatch(hist[0]); // Get latest batch
+        setIsUndoModalOpen(true);
+      } else {
+        alert("No history found to undo.");
+      }
+    } catch (e) {
+      console.error(e);
+      alert("Failed to load history.");
+    }
+  }
+
+  async function confirmUndo() {
+    setIsUndoing(true);
     try {
       const result = await undoLastOperation();
       if (result.success) {
         alert(`Undo Successful! Restored ${result.restored_count} files.`);
-        // Refresh if showing source
-        if (selectedPaths.length > 0) {
-          handleSelection(selectedPaths);
-        } else {
-          setFiles([]);
-          setLoadingMessage(null);
-        }
+
+        // Reset state clearly
+        setFiles([]);
+        setSourcePath(null);
+        setSelectedPaths([]);
+        setHasScanned(false);
+        setIsUndoModalOpen(false);
 
         // Re-check info
         getHistory().then((hist: any[]) => setHasHistory(hist.length > 0));
 
       } else {
         alert(`Undo Failed: ${result.message}`);
-        setLoadingMessage(null);
       }
     } catch (e: any) {
       alert("Undo failed: " + e.message);
-      setLoadingMessage(null);
+    } finally {
+      setIsUndoing(false);
     }
   }
 
@@ -497,61 +561,76 @@ function App() {
       )}
 
       {/* Sidebar Navigation */}
-      <aside className="w-64 flex-none h-full border-r border-gray-800 p-6 flex flex-col gap-6 bg-gray-900/50 backdrop-blur-sm z-10">
-        <div className="flex items-center gap-3 px-2">
-          <img src="/icon.png" alt="Logo" className="w-8 h-8 rounded-lg" />
-          <h1 className="text-xl font-bold tracking-tight">Sortify</h1>
+      <aside
+        className={clsx(
+          "flex-none h-full border-r border-gray-800 flex flex-col gap-6 bg-gray-900/50 backdrop-blur-sm z-10 transition-all duration-300 relative",
+          isSidebarOpen ? "w-64 p-6" : "w-20 p-4 items-center"
+        )}
+      >
+        <button
+          onClick={() => setIsSidebarOpen(!isSidebarOpen)}
+          className="absolute -right-3 top-8 bg-gray-800 text-gray-400 hover:text-white rounded-full p-1 border border-gray-700 shadow-lg z-50 hover:bg-gray-700 transition-colors"
+        >
+          {isSidebarOpen ? <PanelLeftClose size={14} /> : <PanelLeftOpen size={14} />}
+        </button>
+
+        <div className={clsx("flex items-center gap-3", isSidebarOpen ? "px-2" : "justify-center")}>
+          <img src="/icon.png" alt="Logo" className="w-8 h-8 rounded-lg shrink-0" />
+          {isSidebarOpen && <h1 className="text-xl font-bold tracking-tight whitespace-nowrap">Sortify</h1>}
         </div>
 
-        <nav className="flex-1 space-y-1">
+        <nav className="flex-1 space-y-1 w-full">
           <button
             onClick={() => setView('scanner')}
             className={clsx(
               "w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors",
+              !isSidebarOpen && "justify-center",
               view === 'scanner' ? "bg-blue-600/10 text-blue-400" : "text-gray-400 hover:bg-gray-800 hover:text-gray-100"
             )}
+            title="Scanner"
           >
-            <Home size={18} />
-            Scanner
+            <Home size={18} className="shrink-0" />
+            {isSidebarOpen && <span>Scanner</span>}
           </button>
           <button
             onClick={() => setView('settings')}
             className={clsx(
               "w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors",
+              !isSidebarOpen && "justify-center",
               view === 'settings' ? "bg-blue-600/10 text-blue-400" : "text-gray-400 hover:bg-gray-800 hover:text-gray-100"
             )}
+            title="Settings"
           >
-            <SettingsIcon size={18} />
-            Settings
+            <SettingsIcon size={18} className="shrink-0" />
+            {isSidebarOpen && <span>Settings</span>}
           </button>
         </nav>
 
-        <div className="pt-6 border-t border-gray-800 space-y-4">
-          {hasHistory && (
-            <button
-              onClick={handleUndo}
-              className="w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium text-yellow-500 hover:bg-yellow-500/10 transition-colors"
+        <div className={clsx("pt-6 border-t border-gray-800 space-y-4 w-full", !isSidebarOpen && "flex flex-col items-center")}>
+
+          {/* Note: Undo button removed from here */}
+
+          <div className={clsx("flex flex-col gap-1", isSidebarOpen ? "px-2" : "items-center")}>
+            <div
+              className={clsx("flex items-center gap-2 text-xs text-gray-500", !isSidebarOpen && "justify-center")}
+              title="API Connected"
             >
-              <RotateCcw size={18} />
-              Undo Last Batch
-            </button>
-          )}
-          <div className="flex flex-col gap-1 px-2">
-            <div className="flex items-center gap-2 text-xs text-gray-500">
-              <span className="w-2 h-2 rounded-full bg-green-500"></span>
-              API Connected
+              <span className="w-2 h-2 rounded-full bg-green-500 shrink-0"></span>
+              {isSidebarOpen && "API Connected"}
             </div>
+
             {appVersion && (
               <div
-                className="text-[10px] text-gray-600 font-mono cursor-pointer hover:text-blue-400 transition-colors"
+                className={clsx(
+                  "text-[10px] text-gray-600 font-mono cursor-pointer hover:text-blue-400 transition-colors",
+                  !isSidebarOpen && "text-center w-full"
+                )}
                 onClick={() => {
-                  // Easter egg: Triple click to force mock? Or just single click to check manual?
-                  // Let's make it single click to check, or if dev, mock.
                   if (updateStatus === 'idle' || updateStatus === 'error') {
                     checkUpdate();
                   }
                 }}
-                title="Click to check for updates"
+                title={`v${appVersion} - Click to check for updates`}
               >
                 v{appVersion}
               </div>
@@ -561,10 +640,14 @@ function App() {
             {updateStatus === 'available' && (
               <button
                 onClick={() => setIsUpdateModalOpen(true)}
-                className="mt-2 w-full flex items-center gap-2 px-3 py-2 bg-blue-600/20 text-blue-400 rounded-lg text-xs font-bold border border-blue-600/50 hover:bg-blue-600/30 transition-all animate-pulse"
+                className={clsx(
+                  "mt-2 w-full flex items-center gap-2 px-3 py-2 bg-blue-600/20 text-blue-400 rounded-lg text-xs font-bold border border-blue-600/50 hover:bg-blue-600/30 transition-all animate-pulse",
+                  !isSidebarOpen && "justify-center px-2"
+                )}
+                title="Update Available"
               >
-                <ArrowUpCircle size={14} />
-                Update Available
+                <ArrowUpCircle size={14} className="shrink-0" />
+                {isSidebarOpen && "Update Available"}
               </button>
             )}
 
@@ -572,7 +655,10 @@ function App() {
             {import.meta.env.DEV && (
               <button
                 onClick={mockUpdate}
-                className="mt-4 text-[10px] text-gray-700 hover:text-gray-500 uppercase tracking-widest text-center w-full"
+                className={clsx(
+                  "mt-4 text-[10px] text-gray-700 hover:text-gray-500 uppercase tracking-widest text-center w-full",
+                  !isSidebarOpen && "hidden"
+                )}
               >
                 Test Update UI
               </button>
@@ -582,7 +668,7 @@ function App() {
       </aside>
 
       {/* Main Content Area */}
-      <main className="flex-1 h-full overflow-y-auto p-8 relative">
+      <main className="flex-1 h-full overflow-y-auto p-8 relative transition-all">
         {view === 'settings' ? (
           <SettingsPage />
         ) : (
@@ -590,7 +676,21 @@ function App() {
 
             {/* Initial Empty State / Scanner controls */}
             {!loadingMessage && !hasScanned && !error && (
-              <div className="flex flex-col items-center justify-center py-20 bg-gray-800/30 border border-gray-700/50 rounded-3xl border-dashed">
+              <div className="flex flex-col items-center justify-center py-20 bg-gray-800/30 border border-gray-700/50 rounded-3xl border-dashed relative">
+
+                {/* Last Operation Undo Banner */}
+                {hasHistory && (
+                  <div className="absolute top-4 right-4 animate-fade-in">
+                    <button
+                      onClick={handleUndoClick}
+                      className="flex items-center gap-2 px-4 py-2 bg-yellow-500/10 text-yellow-500 hover:bg-yellow-500/20 rounded-xl text-sm font-medium border border-yellow-500/20 transition-colors"
+                    >
+                      <RotateCcw size={16} />
+                      Undo Last Batch
+                    </button>
+                  </div>
+                )}
+
                 <div className="bg-gray-800 p-4 rounded-full mb-6">
                   <FolderOpen size={48} className="text-blue-400" />
                 </div>
@@ -599,40 +699,39 @@ function App() {
                   Drag and drop a folder here, or select a source<br />to automatically organize your files.
                 </p>
 
-                <div className="flex gap-4">
+                <div className="flex flex-col gap-3 w-full max-w-sm">
                   {defaultSource && (
                     <button
                       onClick={() => handleSelection([defaultSource])}
-                      className="flex items-center gap-2 px-6 py-3 bg-blue-600 hover:bg-blue-500 text-white rounded-xl font-medium transition-colors shadow-lg shadow-blue-900/20"
+                      className="flex items-center justify-center gap-2 px-6 py-3 bg-blue-600 hover:bg-blue-500 text-white rounded-xl font-medium transition-colors shadow-lg shadow-blue-900/20 w-full"
                     >
                       <Play size={20} fill="currentColor" />
                       Scan Default
                     </button>
                   )}
-                  <div className="flex flex-col gap-2">
-                    <FilePicker
-                      currentPath={null}
-                      onPathSelect={handleSelection}
-                      type="folder"
-                      customButton={
-                        <button className="flex items-center gap-2 px-6 py-3 bg-gray-700 hover:bg-gray-600 text-white rounded-xl font-medium transition-colors w-full justify-center">
-                          <FolderOpen size={20} />
-                          Browse Folder...
-                        </button>
-                      }
-                    />
-                    <FilePicker
-                      currentPath={null}
-                      onPathSelect={handleSelection}
-                      type="file"
-                      customButton={
-                        <button className="flex items-center gap-2 px-6 py-3 bg-gray-700 hover:bg-gray-600 text-white rounded-xl font-medium transition-colors w-full justify-center">
-                          <FolderOpen size={20} />
-                          Select Files...
-                        </button>
-                      }
-                    />
-                  </div>
+
+                  <FilePicker
+                    currentPath={null}
+                    onPathSelect={handleSelection}
+                    type="folder"
+                    customButton={
+                      <button className="flex items-center justify-center gap-2 px-6 py-3 bg-gray-700 hover:bg-gray-600 text-white rounded-xl font-medium transition-colors w-full">
+                        <FolderOpen size={20} />
+                        Browse Folder...
+                      </button>
+                    }
+                  />
+                  <FilePicker
+                    currentPath={null}
+                    onPathSelect={handleSelection}
+                    type="file"
+                    customButton={
+                      <button className="flex items-center justify-center gap-2 px-6 py-3 bg-gray-700 hover:bg-gray-600 text-white rounded-xl font-medium transition-colors w-full">
+                        <FolderOpen size={20} />
+                        Select Files...
+                      </button>
+                    }
+                  />
                 </div>
 
                 {defaultSource && (
@@ -692,6 +791,7 @@ function App() {
             {!loadingMessage && files.length > 0 && (
               <section className="animate-fade-in space-y-4">
                 <div className="flex items-center justify-between">
+                  {/* ... Existing Results Header ... */}
                   <div className="flex items-center gap-4">
                     <h2 className="text-xl font-bold">Scan Results</h2>
                     <div className="h-6 w-px bg-gray-700 block mx-2"></div>
@@ -782,6 +882,15 @@ function App() {
                 installUpdate();
                 // do not close modal here, it will show progress
               }}
+            />
+
+            {/* New Undo Modal */}
+            <UndoPreviewModal
+              isOpen={isUndoModalOpen}
+              onClose={() => setIsUndoModalOpen(false)}
+              onConfirm={confirmUndo}
+              batch={undoBatch}
+              isUndoing={isUndoing}
             />
           </div>
         )}

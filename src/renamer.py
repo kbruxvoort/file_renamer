@@ -136,7 +136,7 @@ class Renamer:
         info['type'] = 'unknown'
         return info
 
-    async def get_candidates(self, parsed_info: Dict[str, Any], cached_season_data: Optional[Dict[str, Any]] = None, cached_show_metadata: Optional[Dict[str, Any]] = None) -> list[Dict[str, Any]]:
+    async def get_candidates(self, parsed_info: Dict[str, Any], cached_season_data: Optional[Dict[str, Any]] = None, cached_show_metadata: Optional[Dict[str, Any]] = None, cached_all_candidates: Optional[list] = None) -> list[Dict[str, Any]]:
         """
         Queries APIs to get list of potential metadata matches.
         """
@@ -161,51 +161,47 @@ class Renamer:
                         })
             
             elif parsed_info['type'] == 'tv':
-                # Path A: Using Cached Show Context (Already Normalized Candidate)
-                if cached_show_metadata:
-                    base_candidate = cached_show_metadata.copy()
-                    
-                    # Assume base_candidate has 'id' (TMDB ID)
-                    # Try to fetch specific Episode details to refine the match
-                    episode_title = parsed_info.get('episode_title')
-                    year = base_candidate.get('year') # Default to show year
-                    
-                    if parsed_info.get('season') and parsed_info.get('episode'):
-                         try:
-                             details = {}
-                             # Try Season Cache
-                             if cached_season_data and str(parsed_info['season']) == str(cached_season_data.get('season_number')):
-                                 ep_num = parsed_info['episode']
-                                 for ep in cached_season_data.get('episodes', []):
-                                     if ep.get('episode_number') == ep_num:
-                                         details = ep
-                                         break
-                             
-                             # Fallback to API if not in batch cache
-                             if not details and 'id' in base_candidate:
-                                 details = await tmdb_client.get_episode_details(
-                                     base_candidate['id'], 
-                                     parsed_info['season'], 
-                                     parsed_info['episode']
-                                 )
-                                 
-                             if details:
-                                 # Found episode data!
-                                 episode_title = details.get('name', episode_title)
-                                 air_date = details.get('air_date', '')
-                                 if air_date:
-                                     year = int(air_date.split('-')[0])
-                         except Exception as e:
-                             print(f"Failed to fetch episode details (Cache Path): {e}")
-
-                    # Update the candidate with specific episode info
-                    base_candidate['episode_title'] = episode_title
-                    base_candidate['year'] = year
-                    
-                    candidates.append(base_candidate)
-
-                # Path B: No Cache - Perform Search
-                else:
+                # Path A: Using Cached Candidates (return ALL cached candidates)
+                if cached_all_candidates:
+                    # Return all cached candidates, but enrich the first one with episode details
+                    for i, base_cand in enumerate(cached_all_candidates):
+                        cand = base_cand.copy()
+                        
+                        # Only fetch episode details for the first/primary candidate
+                        if i == 0 and parsed_info.get('season') and parsed_info.get('episode'):
+                            episode_title = parsed_info.get('episode_title')
+                            year = cand.get('year')
+                            try:
+                                details = {}
+                                if cached_season_data and str(parsed_info['season']) == str(cached_season_data.get('season_number')):
+                                    ep_num = parsed_info['episode']
+                                    for ep in cached_season_data.get('episodes', []):
+                                        if ep.get('episode_number') == ep_num:
+                                            details = ep
+                                            break
+                                
+                                if not details and 'id' in cand:
+                                    details = await tmdb_client.get_episode_details(
+                                        cand['id'], 
+                                        parsed_info['season'], 
+                                        parsed_info['episode']
+                                    )
+                                    
+                                if details:
+                                    episode_title = details.get('name', episode_title)
+                                    air_date = details.get('air_date', '')
+                                    if air_date:
+                                        year = int(air_date.split('-')[0])
+                            except Exception as e:
+                                print(f"Failed to fetch episode details (Cache Path): {e}")
+                            
+                            cand['episode_title'] = episode_title
+                            cand['year'] = year
+                        
+                        candidates.append(cand)
+                
+                # Path B: No Cache - Perform fresh search
+                elif not cached_all_candidates:
                     results = await tmdb_client.search_tv(parsed_info['title'])
                 
                     if results.get('results'):

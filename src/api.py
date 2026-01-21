@@ -89,21 +89,22 @@ async def scan_files(request: ScanRequest):
     
     files: List[ScannedFile] = []
     
+    # Collect all search targets mainly
+    search_targets = []
+    logger.info(f"[SCAN] Starting scan for {len(scan_paths)} paths")
+
     # Process each path
     for path in scan_paths:
         if not path.exists():
             print(f"Skipping non-existent path: {path}")
             continue
 
-        search_targets = []
         if path.is_file():
             # If it's a file, verify extension and add directly
             if path.suffix.lower() in ALL_EXTENSIONS: 
                  search_targets.append(path)
             else:
                  # Check if the user really wanted this file? 
-                 # For drag and drop of specific file, we might want to check against ALL_EXTENSIONS
-                 # But we need access to that list. Imported from scanner below.
                  pass
         else:
             # It's a directory, scan it
@@ -117,17 +118,23 @@ async def scan_files(request: ScanRequest):
     folder_cache: Dict[Path, Dict[str, Any]] = {} # Parent Path -> {tmdb_id, title, type}
     season_cache: Dict[tuple, Dict[str, Any]] = {} # (tmdb_id, season_num) -> Full Season Data
 
+    logger.info(f"[SCAN] Total search_targets found: {len(search_targets)}")
+    for t in search_targets:
+        logger.debug(f"[SCAN]   Target: {t.name}")
+
     # Group files by directory to ensure context flows from the first file to the rest
     files_by_dir: Dict[Path, List[Path]] = {}
     for p in search_targets:
         if p.parent not in files_by_dir:
             files_by_dir[p.parent] = []
         files_by_dir[p.parent].append(p)
+    
+    logger.info(f"[SCAN] Grouped into {len(files_by_dir)} directories")
 
     async def process_file(file_path: Path):
         async with semaphore:
             try:
-                # print(f"[DEBUG] Processing {file_path.name}...") 
+                logger.debug(f"[PROCESS] Processing {file_path.name}...") 
                 
                 # 1. Parse Initial Metadata
                 metadata = renamer.parse_filename(file_path)
@@ -167,6 +174,8 @@ async def scan_files(request: ScanRequest):
                                 metadata['tmdb_id'] = cached['tmdb_id']
                             if 'show_metadata' in cached:
                                 metadata['show_metadata'] = cached['show_metadata']
+                            if 'all_candidates' in cached:
+                                metadata['all_candidates'] = cached['all_candidates']
                             using_cache = True
 
                 
@@ -192,29 +201,31 @@ async def scan_files(request: ScanRequest):
                              print(f"Failed to batch fetch season {season_num}: {e}")
 
                 # 4. Get Candidates (passing cached data)
-                # Pass show_metadata if we have it to skip search_tv
-                cached_show = metadata.get('show_metadata')
+                # Pass all_candidates if available to preserve ambiguous options
+                cached_all = metadata.get('all_candidates')
                 candidates_raw = await renamer.get_candidates(
                     metadata, 
                     cached_season_data=cached_season_data,
-                    cached_show_metadata=cached_show
+                    cached_all_candidates=cached_all
                 )
                 
                 # Update Folder Cache if we found a good TV match and didn't have one
                 if candidates_raw and candidates_raw[0].get('type') == 'tv':
                      # Only start caching if we didn't have ID before AND matches rules
                      if not is_mixed_dir and file_path.parent not in folder_cache:
-                         print(f"[DEBUG] CACHE SET for {file_path.parent.name}: {candidates_raw[0]['title']}")
+                         print(f"[DEBUG] CACHE SET for {file_path.parent.name}: {candidates_raw[0]['title']} ({len(candidates_raw)} candidates)")
                          folder_cache[file_path.parent] = {
                              'type': 'tv',
                              'title': candidates_raw[0]['title'],
                              'tmdb_id': candidates_raw[0]['id'],
-                             'show_metadata': candidates_raw[0] # Verify this structure has what we need
+                             'show_metadata': candidates_raw[0],  # Primary match
+                             'all_candidates': candidates_raw  # ALL candidates for ambiguity detection
                          }
-                     elif 'tmdb_id' not in folder_cache[file_path.parent]:
+                     elif file_path.parent in folder_cache and 'tmdb_id' not in folder_cache[file_path.parent]:
                           # Update if we had title but no ID
                           folder_cache[file_path.parent]['tmdb_id'] = candidates_raw[0]['id']
                           folder_cache[file_path.parent]['show_metadata'] = candidates_raw[0]
+                          folder_cache[file_path.parent]['all_candidates'] = candidates_raw
 
                 # 5. Build Response Model
                 candidates = []
@@ -262,7 +273,7 @@ async def scan_files(request: ScanRequest):
                     proposed_path=proposed_path
                 )
             except Exception as e:
-                print(f"Error processing {file_path}: {e}")
+                logger.error(f"Error processing {file_path}: {e}", exc_info=True)
                 return None
 
     # Execute by directory group
@@ -271,6 +282,8 @@ async def scan_files(request: ScanRequest):
     for dir_path, dir_files in files_by_dir.items():
         if not dir_files:
             continue
+        
+        logger.info(f"[SCAN] Processing directory: {dir_path.name} ({len(dir_files)} files)")
             
         # Sort files by name to ensure consistent order (helps with finding S01E01 etc first)
         dir_files.sort(key=lambda p: p.name)
@@ -286,6 +299,7 @@ async def scan_files(request: ScanRequest):
             # Check if cache is established
             if dir_path in folder_cache and folder_cache[dir_path].get('type') == 'tv':
                 # Cache is ready! Switch to parallel for the rest
+                logger.info(f"[SCAN] Cache established, breaking at file {i}")
                 break
             
             # Process strictly one by one
@@ -298,12 +312,24 @@ async def scan_files(request: ScanRequest):
         # Phase 2: Parallel Processing
         # Process all remaining files
         remaining_files = [f for i, f in enumerate(dir_files) if i not in processed_indices]
+        logger.info(f"[SCAN] Phase 1 processed {len(processed_indices)}, Phase 2: {len(remaining_files)} remaining")
         if remaining_files:
-            rest_results = await asyncio.gather(*[process_file(p) for p in remaining_files])
+            rest_results = await asyncio.gather(*[process_file(p) for p in remaining_files], return_exceptions=True)
+            # Log any exceptions
+            for i, res in enumerate(rest_results):
+                if isinstance(res, Exception):
+                    logger.error(f"[SCAN] Exception processing {remaining_files[i].name}: {res}")
+                    rest_results[i] = None
             file_results.extend(rest_results)
+    
+    logger.info(f"[SCAN] Total file_results before filter: {len(file_results)}")
+    none_count = sum(1 for r in file_results if r is None)
+    if none_count > 0:
+        logger.warning(f"[SCAN] {none_count} files returned None")
     
     # Filter out None results
     files = [f for f in file_results if f]
+    logger.info(f"[SCAN] Final result count: {len(files)}")
     
     # Just use first path or config as source_dir for display
     display_source = str(scan_paths[0]) if scan_paths else str(config.SOURCE_DIR)
@@ -359,8 +385,8 @@ def execute_moves(request: ExecuteRequest):
             final_target = filesystem.move_file(original, target_main)
             
             moved.append({
-                "from": str(original),
-                "to": str(final_target)
+                "src": str(original),
+                "dest": str(final_target)
             })
             
             # 3. Move Associated Files
@@ -389,8 +415,8 @@ def execute_moves(request: ExecuteRequest):
                     filesystem.move_file(assoc, target_assoc)
                     
                     moved.append({
-                        "from": str(assoc),
-                        "to": str(target_assoc),
+                        "src": str(assoc),
+                        "dest": str(target_assoc),
                         "associated": True
                     })
                 except Exception as e:

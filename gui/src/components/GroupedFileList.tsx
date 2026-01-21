@@ -15,30 +15,51 @@ interface GroupedFileListProps {
 }
 
 export function GroupedFileList({ files, onRowClick, onRemove }: GroupedFileListProps) {
-    // derived state: group by folder
+    // derived state: group by content (show/movie ID) or folder for unmatched
     const groups = useMemo(() => {
-        const map = new Map<string, FileItem[]>();
-        files.forEach(f => {
-            // Extract directory from original path
-            const platformSep = f.original_path.includes('\\') ? '\\' : '/';
-            const parts = f.original_path.split(platformSep);
-            parts.pop(); // remove filename
-            const dir = parts.join(platformSep);
+        const map = new Map<string, { files: FileItem[], groupKey: string, isContentGroup: boolean }>();
 
-            if (!map.has(dir)) map.set(dir, []);
-            map.get(dir)!.push(f);
+        files.forEach(f => {
+            const candidate = f.candidates[f.selected_index];
+
+            // Determine group key
+            let groupKey: string;
+            let isContentGroup = false;
+
+            if (candidate?.id) {
+                // Group by content type + ID (e.g., "tv::1396" for Breaking Bad)
+                groupKey = `${candidate.type}::${candidate.id}`;
+                isContentGroup = true;
+            } else if (candidate?.title) {
+                // Fallback to title if no ID but has match
+                groupKey = `title::${candidate.title}`;
+                isContentGroup = true;
+            } else {
+                // No match - group by folder
+                const platformSep = f.original_path.includes('\\') ? '\\' : '/';
+                const parts = f.original_path.split(platformSep);
+                parts.pop(); // remove filename
+                groupKey = `folder::${parts.join(platformSep)}`;
+            }
+
+            if (!map.has(groupKey)) {
+                map.set(groupKey, { files: [], groupKey, isContentGroup });
+            }
+            map.get(groupKey)!.files.push(f);
         });
+
         return map;
     }, [files]);
 
     return (
         <div className="space-y-6">
-            {Array.from(groups.entries()).map(([dir, groupFiles]) => (
-                <FolderGroup
-                    key={dir}
-                    dir={dir}
-                    files={groupFiles}
+            {Array.from(groups.entries()).map(([key, group]) => (
+                <ContentGroup
+                    key={key}
+                    groupKey={group.groupKey}
+                    files={group.files}
                     allFiles={files}
+                    isContentGroup={group.isContentGroup}
                     onRowClick={onRowClick}
                     onRemove={onRemove}
                 />
@@ -47,17 +68,41 @@ export function GroupedFileList({ files, onRowClick, onRemove }: GroupedFileList
     );
 }
 
-function FolderGroup({ dir, files, allFiles, onRowClick, onRemove }: {
-    dir: string,
+function ContentGroup({ groupKey, files, allFiles, isContentGroup, onRowClick, onRemove }: {
+    groupKey: string,
     files: FileItem[],
     allFiles: FileItem[],
+    isContentGroup: boolean,
     onRowClick: (idx: number) => void,
     onRemove: (idx: number) => void
 }) {
     const [isExpanded, setIsExpanded] = useState(true);
 
-    // Group Intelligence
+    // Group Intelligence - use first file's candidate for title/year
     const firstCand = files[0]?.candidates[files[0]?.selected_index];
+
+    // Determine display title and year
+    let groupTitle = "";
+    let groupYear = null;
+    let groupSubtitle = "";
+
+    if (isContentGroup && firstCand) {
+        // Content group - use matched title
+        groupTitle = firstCand.title;
+        groupYear = firstCand.year;
+        // Show source folders as subtitle
+        const folders = new Set(files.map(f => {
+            const parts = f.original_path.split(/[/\\]/);
+            parts.pop();
+            return parts.pop() || '';
+        }));
+        groupSubtitle = Array.from(folders).join(', ');
+    } else {
+        // Folder-based fallback for unmatched
+        const folderPath = groupKey.replace('folder::', '');
+        groupTitle = folderPath.split(/[/\\]/).pop() || folderPath;
+        groupSubtitle = folderPath;
+    }
 
     // Check if this looks like a "Show Folder" or a "Mixed Bag"
     // Heuristic: If >1 items and ALL match the same Show Title, it's a Show.
@@ -67,17 +112,6 @@ function FolderGroup({ dir, files, allFiles, onRowClick, onRemove }: {
     });
 
     const isMixed = !allSameTitle || files.length === 0;
-
-    let groupTitle = "";
-    let groupYear = null;
-
-    if (!isMixed && firstCand) {
-        groupTitle = firstCand.title;
-        groupYear = firstCand.year;
-    } else {
-        // Use Folder Name
-        groupTitle = dir.split(/[/\\]/).pop() || dir;
-    }
 
     // Stats
     const hasUncertain = files.some(f => !f.confirmed && f.candidates.length > 1);
@@ -106,7 +140,7 @@ function FolderGroup({ dir, files, allFiles, onRowClick, onRemove }: {
                             </span>
                         </div>
                         <div className="text-xs text-gray-500 font-mono truncate max-w-lg">
-                            {dir}
+                            {groupSubtitle}
                         </div>
                     </div>
                 </div>
@@ -219,17 +253,17 @@ function FolderGroup({ dir, files, allFiles, onRowClick, onRemove }: {
                                             </span>
                                         )}
 
-                                        {/* Action Buttons */}
-                                        <div className="flex gap-1 w-16 justify-end">
+                                        {/* Action Buttons - all hover-based for cleaner UI */}
+                                        <div className="flex gap-1 justify-end opacity-0 group-hover:opacity-100 transition-opacity">
                                             <button
-                                                className="p-1.5 rounded-lg hover:bg-gray-700 text-gray-400 hover:text-blue-400 transition-colors opacity-0 group-hover:opacity-100"
+                                                className="p-1.5 rounded-lg hover:bg-gray-700 text-gray-400 hover:text-blue-400 transition-colors"
                                                 onClick={(e) => { e.stopPropagation(); onRowClick(globalIndex); }}
-                                                title="Edit"
+                                                title={hasMultiple ? "Change match" : "Edit"}
                                             >
                                                 <Edit2 size={16} />
                                             </button>
                                             <button
-                                                className="p-1.5 rounded-lg hover:bg-gray-700 text-gray-400 hover:text-red-400 transition-colors opacity-0 group-hover:opacity-100"
+                                                className="p-1.5 rounded-lg hover:bg-gray-700 text-gray-400 hover:text-red-400 transition-colors"
                                                 onClick={(e) => { e.stopPropagation(); onRemove(globalIndex); }}
                                                 title="Remove"
                                             >
