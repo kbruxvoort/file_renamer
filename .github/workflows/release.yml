@@ -57,26 +57,3 @@ jobs:
           releaseBody: 'See the assets to download this version and install.'
           releaseDraft: true
           prerelease: false
-
-      - name: Generate Update Manifest
-        if: matrix.platform == 'windows-latest'
-        shell: bash
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          # Get version from package.json
-          VERSION=$(jq -r .version gui/package.json)
-          TAG_NAME="app-v$VERSION"
-          
-          echo "Generating manifest for version $VERSION tag $TAG_NAME"
-          python scripts/generate_update_manifest.py "$VERSION" "$TAG_NAME"
-
-      - name: Upload Update Manifest
-        if: matrix.platform == 'windows-latest'
-        shell: bash
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          VERSION=$(jq -r .version gui/package.json)
-          TAG_NAME="app-v$VERSION"
-          gh release upload "$TAG_NAME" latest.json
