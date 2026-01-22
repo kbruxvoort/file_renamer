@@ -29,9 +29,20 @@ def generate_manifest(version, tag_name, output_file="latest.json"):
     exe_name = os.path.basename(exe_path)
     
     # Find signature file
-    sig_path = exe_path + ".sig"
-    if not os.path.exists(sig_path):
-        print(f"Error: Signature file not found: {sig_path}")
+    # Check for both .exe.sig and .sig
+    possible_sigs = [exe_path + ".sig", os.path.splitext(exe_path)[0] + ".sig"]
+    sig_path = None
+    
+    for p in possible_sigs:
+        if os.path.exists(p):
+            sig_path = p
+            break
+            
+    if not sig_path:
+        print(f"Error: Signature file not found. Checked: {possible_sigs}")
+        print(f"Contents of {bundle_dir}:")
+        for f in os.listdir(bundle_dir):
+            print(f" - {f}")
         sys.exit(1)
         
     with open(sig_path, 'r') as f:
