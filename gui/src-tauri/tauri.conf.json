@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "Sortify",
-  "version": "0.1.12",
+  "version": "0.1.13",
   "identifier": "com.renamer.app",
   "build": {
     "frontendDist": "../dist",
@@ -27,7 +27,9 @@
   },
   "bundle": {
     "active": true,
-    "targets": "all",
+    "targets": [
+      "nsis"
+    ],
     "createUpdaterArtifacts": true,
     "icon": [
       "icons/32x32.png",
@@ -47,7 +49,10 @@
         "https://github.com/kbruxvoort/file_renamer/releases/latest/download/latest.json"
       ],
       "dialog": true,
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEE2NEIxOEY4NjlGOTAzOTUKUldTVkEvbHArQmhMcGlRRUVlWldaZjAwNDRhcHBTdTBCRTRUNXB3QytnZVZrRHAvU1M3WkFxeDgK"
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEE2NEIxOEY4NjlGOTAzOTUKUldTVkEvbHArQmhMcGlRRUVlWldaZjAwNDRhcHBTdTBCRTRUNXB3QytnZVZrRHAvU1M3WkFxeDgK",
+      "windows": {
+        "installMode": "passive"
+      }
     }
   }
 }
