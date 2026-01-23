@@ -73,6 +73,20 @@ class ConfigUpdate(BaseModel):
     key: str
     value: str
 
+@app.post("/shutdown")
+async def shutdown_server():
+    """Immediately terminate the API server. Used before updates."""
+    import os
+    import threading
+    logger.info("Shutdown requested via API, terminating...")
+    # Schedule exit in a separate thread to allow response to be sent
+    def delayed_exit():
+        import time
+        time.sleep(0.5)  # Allow response to be sent
+        os._exit(0)
+    threading.Thread(target=delayed_exit, daemon=True).start()
+    return {"status": "shutting_down"}
+
 @app.post("/scan", response_model=ScanResponse)
 async def scan_files(request: ScanRequest):
     # Determine source paths

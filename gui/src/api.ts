@@ -29,6 +29,17 @@ export async function sendHeartbeat(): Promise<void> {
     }
 }
 
+export async function shutdownBackend(): Promise<void> {
+    try {
+        const baseUrl = await getApiBase();
+        await fetch(`${baseUrl}/shutdown`, { method: 'POST' });
+        console.log("Backend shutdown requested");
+    } catch (e) {
+        // Expected - server shuts down before responding
+        console.log("Backend shutdown (connection closed as expected)");
+    }
+}
+
 export interface ScanResponse {
     files: ScannedFile[];
     source_dir: string;

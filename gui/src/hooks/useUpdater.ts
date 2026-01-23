@@ -64,6 +64,12 @@ export function useUpdater(): UseUpdaterReturn {
         totalBytesRef.value = 0; // Reset ref
 
         try {
+            // Shutdown the backend first to avoid file lock issues during update
+            const { shutdownBackend } = await import('../api');
+            await shutdownBackend();
+            // Give it a moment to fully terminate
+            await new Promise(resolve => setTimeout(resolve, 1000));
+
             await updateAvailable.downloadAndInstall((event) => {
                 if (event.event === 'Started') {
                     const total = event.data.contentLength || 0;
