@@ -1,6 +1,6 @@
 [project]
 name = "file-renamer"
-version = "0.1.14"
+version = "0.1.15"
 description = "Sortify: scan, match and organize movies, TV, books and audiobooks"
 readme = "README.md"
 requires-python = ">=3.13"
