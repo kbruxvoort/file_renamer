@@ -79,7 +79,31 @@ def bump_version(new_version: str):
             except Exception as e:
                 print(f"Failed to update {path.name}: {e}")
 
+    bump_lockfiles(root, new_version)
     print("Version bump complete!")
+
+
+def bump_lockfiles(root: Path, new_version: str):
+    """Updates only the app's own entries in the lockfiles. A blanket find/replace
+    would also hit dependencies that happen to share the old version number."""
+    cargo_lock = root / "gui" / "src-tauri" / "Cargo.lock"
+    if cargo_lock.exists():
+        text = cargo_lock.read_text()
+        text, count = re.subn(
+            r'(\[\[package\]\]\r?\nname = "app"\r?\nversion = ")[^"]*(")',
+            rf'\g<1>{new_version}\g<2>',
+            text,
+        )
+        cargo_lock.write_text(text)
+        print(f"Updating Cargo.lock... ({count} entry)")
+
+    npm_lock = root / "gui" / "package-lock.json"
+    if npm_lock.exists():
+        content = json.loads(npm_lock.read_text())
+        content["version"] = new_version
+        content.get("packages", {}).get("", {})["version"] = new_version
+        npm_lock.write_text(json.dumps(content, indent=2) + "\n")
+        print("Updating package-lock.json...")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Bump application version")
