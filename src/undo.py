@@ -2,8 +2,9 @@ import json
 import shutil
 import uuid
 from pathlib import Path
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from src import filesystem
+from src.config import config
 
 from datetime import datetime
 
@@ -48,68 +49,72 @@ class UndoManager:
         return self.history
 
     def undo_last_batch(self) -> Dict[str, Any]:
+        """Reverses the most recent batch of operations."""
+        return self.undo_batch(None)
+
+    def undo_batch(self, batch_id: Optional[str]) -> Dict[str, Any]:
         """
-        Reverses the most recent batch of operations.
-        Returns report of success/failures.
+        Reverses one batch (the most recent when batch_id is None).
+        Operations that can't be restored stay in history so the undo can be retried.
         """
         if not self.history:
-            return {"success": False, "message": "No history found."}
+            return {"success": False, "message": "No history found.", "restored_count": 0, "failure_count": 0, "failures": []}
 
-        last_batch = self.history[0]
-        ops = last_batch['operations']
-        
-        undo_results = []
+        index = 0
+        if batch_id is not None:
+            index = next((i for i, b in enumerate(self.history) if b.get('batch_id') == batch_id), -1)
+            if index == -1:
+                return {"success": False, "message": "That batch is no longer in history.", "restored_count": 0, "failure_count": 0, "failures": []}
+
+        batch = self.history[index]
+        restored = []
         failures = []
+        remaining_ops = []
 
-        # We need to reverse the operations (last moved file should be moved back first? 
-        # Order shouldn't strictly matter for moves unless there's a chain, but reverse is safer)
-        for op in reversed(ops):
+        library_roots = [config.MOVIE_DIR, config.TV_DIR, config.BOOK_DIR, config.AUDIOBOOK_DIR, config.DEST_DIR]
+
+        # Reverse order so associated files and chains unwind cleanly
+        for op in reversed(batch['operations']):
             src = Path(op['src'])
             dest = Path(op['dest'])
-            
+
             # To undo: move from dest back to src
             try:
                 if not dest.exists():
-                    failures.append(f"File missing at {dest}")
+                    # Nothing left to restore; retrying won't help, so drop it
+                    failures.append({"file": str(dest), "error": "File is no longer at its new location"})
                     continue
 
                 if src.exists():
-                    # Collision! Original location blocked.
-                    # We could try to rename, but for undo, maybe we fail?
-                    # Or we rename to src (1)
-                    failures.append(f"Original location occupied: {src}")
+                    failures.append({"file": str(src), "error": "Original location is occupied"})
+                    remaining_ops.insert(0, op)
                     continue
-                
+
                 # Ensure parent exists (in case we deleted empty dirs)
                 src.parent.mkdir(parents=True, exist_ok=True)
-                
                 shutil.move(str(dest), str(src))
-                undo_results.append(f"Restored {src.name}")
+                restored.append(str(src))
 
-                # Clean up the directory we just moved FROM (dest.parent)
-                # If it's empty now, delete it.
-                # We do not want to delete the ROOT (like 'Movies'), so we might need to know the root.
-                # But clean_empty_dirs handles up to a root. Here we don't strictly know the root 
-                # (Movies/TV/etc), but typically we just want to remove the specific folder created.
-                # Let's pass DEST_DIR as root? We don't have access to config here easily without import.
-                # Let's just clean up the immediate parent if empty to be safe, or just call clean_empty_dirs
-                # which recursively cleans up. We should probably NOT clean up the top level dirs.
-                # filesystem.clean_empty_dirs takes a root_path.
-                # For safety, let's just try to clean the parent directory.
-                filesystem.clean_empty_dirs(dest.parent)
-                
+                # Remove the now-empty folders the move created, but never a library root
+                filesystem.clean_empty_dirs(dest.parent, root_path=filesystem.find_root(dest, library_roots))
+
             except Exception as e:
-                failures.append(f"Error moving {dest} -> {src}: {e}")
+                failures.append({"file": str(dest), "error": str(e)})
+                remaining_ops.insert(0, op)
 
-        # Remove from history
-        self.history.pop(0)
+        # Keep anything that could still be undone later; drop the batch when nothing is left
+        if remaining_ops:
+            batch['operations'] = remaining_ops
+        else:
+            self.history.pop(index)
         self._save_history()
 
         return {
-            "success": True,
-            "restored_count": len(undo_results),
+            "success": not failures,
+            "message": None if not failures else f"{len(failures)} file(s) could not be restored.",
+            "restored_count": len(restored),
             "failure_count": len(failures),
-            "failures": failures
+            "failures": failures,
         }
 
 undo_manager = UndoManager()

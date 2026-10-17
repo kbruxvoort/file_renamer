@@ -1,23 +1,31 @@
 import httpx
 from typing import Optional, Dict, Any
 from src.config import config
-from tenacity import retry, stop_after_attempt, wait_exponential
+from src.api_clients.retry import api_retry, MissingApiKeyError
 
 class TMDBClient:
     BASE_URL = "https://api.themoviedb.org/3"
 
-    def __init__(self):
-        self.api_key = config.TMDB_API_KEY
-        if not self.api_key:
-             # We might want to raise here or handle it gracefully depending on usage
-             pass
-        self.headers = {
-            "Authorization": f"Bearer {self.api_key}"
-        }
-        # If using query param for v3:
-        self.params = {"api_key": self.api_key}
+    @property
+    def params(self) -> Dict[str, Any]:
+        # Read on every request so a key saved in Settings applies without a restart
+        api_key = config.TMDB_API_KEY
+        if not api_key:
+            raise MissingApiKeyError("TMDB API key is not set. Add it in Settings.")
+        return {"api_key": api_key}
 
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
+    async def validate_key(self, api_key: str) -> Optional[bool]:
+        """True/False if TMDB accepts/rejects the key; None if TMDB couldn't be reached."""
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                response = await client.get(f"{self.BASE_URL}/configuration", params={"api_key": api_key})
+        except httpx.HTTPError:
+            return None
+        if response.status_code == 401:
+            return False
+        return response.is_success or None
+
+    @api_retry
     async def search_movie(self, query: str, year: Optional[int] = None) -> Dict[str, Any]:
         async with httpx.AsyncClient() as client:
             params = self.params.copy()
@@ -29,7 +37,7 @@ class TMDBClient:
             response.raise_for_status()
             return response.json()
 
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
+    @api_retry
     async def search_tv(self, query: str) -> Dict[str, Any]:
         async with httpx.AsyncClient() as client:
             params = self.params.copy()
@@ -39,7 +47,7 @@ class TMDBClient:
             response.raise_for_status()
             return response.json()
 
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
+    @api_retry
     async def get_episode_details(self, tv_id: int, season_number: int, episode_number: int) -> Dict[str, Any]:
         async with httpx.AsyncClient() as client:
             params = self.params.copy()
@@ -54,7 +62,7 @@ class TMDBClient:
             response.raise_for_status()
             return response.json()
 
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
+    @api_retry
     async def get_season_details(self, tv_id: int, season_number: int) -> Dict[str, Any]:
         """Fetch details for an entire season (including all episodes)"""
         async with httpx.AsyncClient() as client:

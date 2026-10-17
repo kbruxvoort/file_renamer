@@ -1,11 +1,11 @@
 import httpx
-from typing import Dict, Any, Optional
-from tenacity import retry, stop_after_attempt, wait_exponential
+from typing import Dict, Any
+from src.api_clients.retry import api_retry
 
 class GoogleBooksClient:
     BASE_URL = "https://www.googleapis.com/books/v1/volumes"
 
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
+    @api_retry
     async def search_book(self, query: str) -> Dict[str, Any]:
         async with httpx.AsyncClient() as client:
             params = {"q": query}
