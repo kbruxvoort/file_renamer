@@ -1,6 +1,7 @@
-import { useState, useEffect, useCallback } from 'react';
-import { check, Update } from '@tauri-apps/plugin-updater';
+import { useState, useEffect, useCallback, useRef } from 'react';
+import { check, Update, type DownloadEvent } from '@tauri-apps/plugin-updater';
 import { relaunch } from '@tauri-apps/plugin-process';
+import { shutdownBackend } from '../api';
 
 export type UpdateStatus = 'idle' | 'checking' | 'available' | 'downloading' | 'installing' | 'up-to-date' | 'error';
 
@@ -8,11 +9,11 @@ interface UseUpdaterReturn {
     status: UpdateStatus;
     updateAvailable: Update | null;
     downloadProgress: number; // 0-100
-    downloadedBytes: number;
-    totalBytes: number;
     error: string | null;
+    needsRestart: boolean;     // Backend was stopped but the install failed
     checkUpdate: (silent?: boolean) => Promise<void>;
     installUpdate: () => Promise<void>;
+    restartApp: () => Promise<void>;
     mockUpdate: () => void; // Trigger for testing
 }
 
@@ -20,36 +21,34 @@ export function useUpdater(): UseUpdaterReturn {
     const [status, setStatus] = useState<UpdateStatus>('idle');
     const [updateAvailable, setUpdateAvailable] = useState<Update | null>(null);
     const [downloadProgress, setDownloadProgress] = useState(0);
-    const [downloadedBytes, setDownloadedBytes] = useState(0);
-    const [totalBytes, setTotalBytes] = useState(0);
     const [error, setError] = useState<string | null>(null);
+    const [needsRestart, setNeedsRestart] = useState(false);
 
-    // Use ref to track total bytes in callback without closure staleness
-    const totalBytesRef = useState<{ value: number }>({ value: 0 })[0];
-
-    // Track if we are mocking to prevent real relaunch
-    const [isMocking, setIsMocking] = useState(false);
+    // Track if we are mocking to prevent a real shutdown/relaunch
+    const isMocking = useRef(false);
 
     const checkUpdate = useCallback(async (silent = false) => {
         if (!silent) setStatus('checking');
         setError(null);
-        setIsMocking(false);
+        isMocking.current = false;
 
         try {
             const update = await check();
-            if (update && update.available) {
+            if (update) {
                 setUpdateAvailable(update);
                 setStatus('available');
             } else {
                 setUpdateAvailable(null);
-                if (!silent) setStatus('up-to-date');
-                // Reset to idle after a moment if just checking
-                if (!silent) setTimeout(() => setStatus('idle'), 3000);
+                if (!silent) {
+                    setStatus('up-to-date');
+                    // Reset to idle after a moment if just checking
+                    setTimeout(() => setStatus('idle'), 3000);
+                }
             }
-        } catch (e: any) {
+        } catch (e) {
             console.error("Update check failed:", e);
             if (!silent) {
-                setError(e.message || "Failed to check for updates");
+                setError(e instanceof Error ? e.message : String(e) || "Failed to check for updates");
                 setStatus('error');
             }
         }
@@ -61,72 +60,75 @@ export function useUpdater(): UseUpdaterReturn {
         setStatus('downloading');
         setDownloadProgress(0);
         setError(null);
-        totalBytesRef.value = 0; // Reset ref
 
-        try {
-            // Shutdown the backend first to avoid file lock issues during update
-            const { shutdownBackend } = await import('../api');
-            await shutdownBackend();
-            // Give it a moment to fully terminate
-            await new Promise(resolve => setTimeout(resolve, 1000));
-
-            await updateAvailable.downloadAndInstall((event) => {
-                if (event.event === 'Started') {
-                    const total = event.data.contentLength || 0;
-                    setTotalBytes(total);
-                    totalBytesRef.value = total;
-                    setDownloadedBytes(0);
-                } else if (event.event === 'Progress') {
-                    setDownloadedBytes(prev => {
-                        const newBytes = prev + event.data.chunkLength;
-                        if (totalBytesRef.value > 0) {
-                            setDownloadProgress((newBytes / totalBytesRef.value) * 100);
-                        }
-                        return newBytes;
-                    });
-                } else if (event.event === 'Finished') {
-                    setStatus('installing');
-                    setDownloadProgress(100);
-                }
-            });
-
-            // Relaunch only if real update (or if we want to test relaunch failure in dev)
-            // But for mock, we should just alert.
-            if (!isMocking) {
-                await relaunch();
-            } else {
-                // Mock cleanup
-                alert("Update Complete! App would restart now.");
-                setStatus('idle');
-                setUpdateAvailable(null);
-                setIsMocking(false);
+        let total = 0;
+        let downloaded = 0;
+        const onEvent = (event: DownloadEvent) => {
+            if (event.event === 'Started') {
+                total = event.data.contentLength || 0;
+            } else if (event.event === 'Progress') {
+                downloaded += event.data.chunkLength;
+                if (total > 0) setDownloadProgress((downloaded / total) * 100);
+            } else if (event.event === 'Finished') {
+                setDownloadProgress(100);
             }
+        };
 
-        } catch (e: any) {
+        // 1. Download while the app keeps working. A failed download leaves everything running.
+        try {
+            await updateAvailable.download(onEvent);
+        } catch (e) {
+            console.error("Update download failed:", e);
+            setError(e instanceof Error ? e.message : String(e) || "Failed to download update");
+            setStatus('error');
+            return;
+        }
+
+        if (isMocking.current) {
+            setStatus('idle');
+            setUpdateAvailable(null);
+            isMocking.current = false;
+            return;
+        }
+
+        // 2. Only now stop the backend, so the installer can replace its locked executable
+        setStatus('installing');
+        await shutdownBackend();
+        await new Promise(resolve => setTimeout(resolve, 1000));
+
+        // 3. Install. On Windows the installer normally closes and relaunches the app itself.
+        try {
+            await updateAvailable.install();
+            await relaunch();
+        } catch (e) {
             console.error("Update installation failed:", e);
-            setError(e.message || "Failed to install update");
+            // The backend is already stopped; the only way back is a restart
+            setNeedsRestart(true);
+            setError(`${e instanceof Error ? e.message : String(e) || "Failed to install update"}. Restart Sortify to continue.`);
             setStatus('error');
         }
-    }, [updateAvailable, isMocking]);
+    }, [updateAvailable]);
 
-    // Mock function for testing
+    const restartApp = useCallback(async () => {
+        await relaunch();
+    }, []);
+
+    // Mock function for testing (dev only)
     const mockUpdate = useCallback(() => {
-        setIsMocking(true);
-        // Pseudo-Update Object
+        isMocking.current = true;
         const mockObj = {
             available: true,
             version: "0.2.0-beta",
             currentVersion: "0.1.6",
             date: new Date().toISOString(),
             body: "## Amazing New Features\n- Better UI\n- Faster Scanning\n- Bug Fixes\n\nThis is a mock update for testing.",
-            downloadAndInstall: (cb: any) => {
-                // Return a Promise that resolves when "download" finishes
+            download: (cb: (e: DownloadEvent) => void) => {
                 return new Promise<void>((resolve) => {
                     const total = 100 * 1024 * 1024; // 100MB
                     cb({ event: 'Started', data: { contentLength: total } });
 
                     let current = 0;
-                    const chunk = 2 * 1024 * 1024; // 2MB chunks (slower for visibility)
+                    const chunk = 2 * 1024 * 1024;
 
                     const interval = setInterval(() => {
                         current += chunk;
@@ -135,11 +137,11 @@ export function useUpdater(): UseUpdaterReturn {
                         } else {
                             clearInterval(interval);
                             cb({ event: 'Finished' });
-                            setTimeout(resolve, 1000); // Wait a bit then resolve
+                            setTimeout(resolve, 500);
                         }
-                    }, 100);
+                    }, 50);
                 });
-            }
+            },
         } as unknown as Update;
 
         setUpdateAvailable(mockObj);
@@ -148,18 +150,20 @@ export function useUpdater(): UseUpdaterReturn {
 
     // Initial check
     useEffect(() => {
-        checkUpdate(true);
+        // Deferred so the check never runs inside the render/effect pass
+        const timer = setTimeout(() => checkUpdate(true), 0);
+        return () => clearTimeout(timer);
     }, [checkUpdate]);
 
     return {
         status,
         updateAvailable,
         downloadProgress,
-        downloadedBytes,
-        totalBytes,
         error,
+        needsRestart,
         checkUpdate,
         installUpdate,
+        restartApp,
         mockUpdate
     };
 }

@@ -1,23 +1,10 @@
-
-import { Save, FolderOpen, Eye, EyeOff } from 'lucide-react';
-import { useState, useEffect } from 'react';
+import { Save, FolderOpen, Eye, EyeOff, RotateCcw, ExternalLink } from 'lucide-react';
+import { useState, useEffect, type KeyboardEvent } from 'react';
 import { open } from '@tauri-apps/plugin-dialog';
-import { getConfig, updateConfig } from '../api';
+import { getConfig, updateConfig, templatePreview, type AppConfig } from '../api';
+import { toast } from './toast';
 
-interface Settings {
-    TMDB_API_KEY: string | null;
-    DEST_DIR: string;
-    MOVIE_DIR: string;
-    TV_DIR: string;
-    BOOK_DIR: string;
-    AUDIOBOOK_DIR: string;
-    SOURCE_DIR: string | null;
-    MIN_VIDEO_SIZE_MB: number;
-    MOVIE_TEMPLATE: string;
-    TV_TEMPLATE: string;
-    BOOK_TEMPLATE: string;
-    AUDIOBOOK_TEMPLATE: string;
-}
+type TemplateKey = 'MOVIE_TEMPLATE' | 'TV_TEMPLATE' | 'BOOK_TEMPLATE' | 'AUDIOBOOK_TEMPLATE';
 
 // Presets
 const PRESETS = {
@@ -36,45 +23,157 @@ const PRESETS = {
     ]
 };
 
-export function SettingsPage() {
-    const [settings, setSettings] = useState<Settings | null>(null);
+// Text input that keeps a local draft and only saves on blur or Enter,
+// so half-typed values (e.g. "{tit") are never written to the config.
+function DraftInput({ value, onSave, className, type = "text", placeholder }: {
+    value: string;
+    onSave: (value: string) => Promise<string | null>; // resolves to an error message, or null
+    className?: string;
+    type?: string;
+    placeholder?: string;
+}) {
+    const [draft, setDraft] = useState(value);
+    const [error, setError] = useState<string | null>(null);
+
+    useEffect(() => { setDraft(value); }, [value]);
+
+    async function commit() {
+        if (draft === value) return;
+        setError(await onSave(draft));
+    }
+
+    function handleKeyDown(e: KeyboardEvent<HTMLInputElement>) {
+        if (e.key === 'Enter') e.currentTarget.blur();
+        if (e.key === 'Escape') { setDraft(value); setError(null); }
+    }
+
+    return (
+        <>
+            <input
+                type={type}
+                className={className}
+                placeholder={placeholder}
+                value={draft}
+                onChange={(e) => setDraft(e.target.value)}
+                onBlur={commit}
+                onKeyDown={handleKeyDown}
+            />
+            {error && <p className="text-xs text-red-400 mt-1">{error}</p>}
+        </>
+    );
+}
+
+// Template input with a live preview against a sample file. Saves on blur/Enter only.
+function TemplateField({ label, value, defaultValue, mediaType, presets, variables, onSave }: {
+    label: string;
+    value: string;
+    defaultValue?: string;
+    mediaType: string;
+    presets: { name: string; value: string }[];
+    variables: string;
+    onSave: (value: string) => Promise<string | null>;
+}) {
+    const [draft, setDraft] = useState(value);
+    const [saveError, setSaveError] = useState<string | null>(null);
+    const [preview, setPreview] = useState<{ path: string | null; error: string | null } | null>(null);
+
+    useEffect(() => { setDraft(value); }, [value]);
+
+    // Debounced preview of whatever is typed, before it's saved
+    useEffect(() => {
+        const timer = setTimeout(() => {
+            templatePreview(draft, mediaType).then(setPreview).catch(() => setPreview(null));
+        }, 300);
+        return () => clearTimeout(timer);
+    }, [draft, mediaType]);
+
+    async function save(next: string) {
+        setDraft(next);
+        if (next === value) return;
+        setSaveError(await onSave(next));
+    }
+
+    function handleKeyDown(e: KeyboardEvent<HTMLInputElement>) {
+        if (e.key === 'Enter') e.currentTarget.blur();
+        if (e.key === 'Escape') { setDraft(value); setSaveError(null); }
+    }
+
+    const presetValue = presets.find(p => p.value === draft)?.value ?? "custom";
+    const error = saveError || preview?.error;
+
+    return (
+        <div>
+            <div className="flex justify-between items-center mb-1 gap-2">
+                <label className="block text-sm font-medium text-gray-300">{label}</label>
+                <div className="flex items-center gap-2">
+                    {defaultValue && draft !== defaultValue && (
+                        <button
+                            onClick={() => save(defaultValue)}
+                            className="flex items-center gap-1 text-xs text-gray-400 hover:text-white"
+                            title={`Reset to ${defaultValue}`}
+                        >
+                            <RotateCcw size={12} /> Reset
+                        </button>
+                    )}
+                    <select
+                        className="bg-gray-900 text-xs text-gray-400 border border-gray-700 rounded px-2 py-1 outline-none focus:border-blue-500"
+                        onChange={(e) => { if (e.target.value !== 'custom') save(e.target.value); }}
+                        value={presetValue}
+                        aria-label={`${label} preset`}
+                    >
+                        <option value="custom" disabled>Custom</option>
+                        {presets.map((p, i) => <option key={i} value={p.value}>{p.name}</option>)}
+                    </select>
+                </div>
+            </div>
+            <input
+                type="text"
+                className="w-full bg-gray-900 border border-gray-700 rounded-lg px-4 py-2 text-white font-mono text-sm focus:ring-2 focus:ring-blue-500 outline-none"
+                value={draft}
+                onChange={(e) => { setDraft(e.target.value); setSaveError(null); }}
+                onBlur={() => save(draft)}
+                onKeyDown={handleKeyDown}
+                aria-label={`${label} template`}
+            />
+            {error ? (
+                <p className="text-xs text-red-400 mt-1">{error}</p>
+            ) : preview?.path ? (
+                <p className="text-xs text-gray-400 mt-1 font-mono truncate" title={preview.path}>
+                    <span className="text-gray-500 font-sans">Example: </span>{preview.path}
+                </p>
+            ) : null}
+            <p className="text-xs text-gray-500 mt-1">Available: {variables}</p>
+        </div>
+    );
+}
+
+export function SettingsPage({ onSaved }: { onSaved?: () => void }) {
+    const [settings, setSettings] = useState<AppConfig | null>(null);
     const [loading, setLoading] = useState(true);
-    const [message, setMessage] = useState<{ type: 'success' | 'error', text: string } | null>(null);
     const [showKey, setShowKey] = useState(false);
 
     useEffect(() => {
-        loadSettings();
+        let cancelled = false;
+        getConfig(showKey)
+            .then(data => { if (!cancelled) setSettings(data); })
+            .catch(err => toast(`Failed to load settings: ${err instanceof Error ? err.message : err}`, 'error'))
+            .finally(() => { if (!cancelled) setLoading(false); });
+        return () => { cancelled = true; };
     }, [showKey]);
 
-    async function loadSettings() {
+    async function updateSetting(key: string, value: string): Promise<string | null> {
         try {
-            // Use API client which handles dynamic port
-            const data = await getConfig(showKey);
-            setSettings(data);
+            const warning = await updateConfig(key, value);
+            // Keep only the masked key in state unless it's being shown
+            const stored = key === 'TMDB_API_KEY' && !showKey ? `***${value.slice(-4)}` : value;
+            setSettings(prev => prev ? { ...prev, [key]: stored } : prev);
+            toast(warning || "Saved", warning ? 'info' : 'success');
+            onSaved?.();
+            return null;
         } catch (err) {
-            console.error(err);
-            setMessage({ type: 'error', text: `Failed to load settings: ${err}` });
-        } finally {
-            setLoading(false);
-        }
-    }
-
-    async function updateSetting(key: string, value: string) {
-        if (!settings) return;
-
-        // Optimistic update
-        setSettings({ ...settings, [key]: value });
-
-        try {
-            // Use API client
-            await updateConfig(key, value);
-
-            // Clear message after 3s
-            setMessage({ type: 'success', text: "Saved" });
-            setTimeout(() => setMessage(null), 3000);
-        } catch (err) {
-            console.error(err);
-            setMessage({ type: 'error', text: `Failed to save ${key}: ${err}` });
+            const text = err instanceof Error ? err.message : String(err);
+            toast(`Couldn't save: ${text}`, 'error');
+            return text;
         }
     }
 
@@ -94,14 +193,15 @@ export function SettingsPage() {
         }
     }
 
-    // current preset helpers
-    const getPresetValue = (template: string, type: 'movies' | 'tv' | 'books') => {
-        const found = PRESETS[type].find(p => p.value === template);
-        return found ? found.value : "custom";
-    };
-
     if (loading) return <div className="p-8 text-center text-gray-500">Loading settings...</div>;
     if (!settings) return <div className="p-8 text-center text-red-400">Error loading settings</div>;
+
+    const templateFields: { key: TemplateKey; label: string; mediaType: string; presets: { name: string; value: string }[]; variables: string }[] = [
+        { key: 'MOVIE_TEMPLATE', label: 'Movies', mediaType: 'movie', presets: PRESETS.movies, variables: '{title}, {year}, {ext}' },
+        { key: 'TV_TEMPLATE', label: 'TV Shows', mediaType: 'tv', presets: PRESETS.tv, variables: '{title}, {year} (show premiere), {season}, {episode}, {episode_title}, {ext}' },
+        { key: 'BOOK_TEMPLATE', label: 'Books (Ebooks)', mediaType: 'book', presets: PRESETS.books, variables: '{author}, {title}, {year}, {ext}' },
+        { key: 'AUDIOBOOK_TEMPLATE', label: 'Audiobooks', mediaType: 'audiobook', presets: PRESETS.books, variables: '{author}, {title}, {year}, {ext}' },
+    ];
 
     return (
         <div className="w-full max-w-6xl mx-auto space-y-8 animate-fade-in pb-12">
@@ -114,14 +214,6 @@ export function SettingsPage() {
                 </p>
             </div>
 
-            {message && (
-                <div className={`fixed top-4 right-4 z-50 px-4 py-2 rounded-lg shadow-lg border backdrop-blur-md transition-all ${message.type === 'success' ? 'bg-green-900/80 border-green-800 text-green-200'
-                    : 'bg-red-900/80 border-red-800 text-red-200'
-                    }`}>
-                    {message.text}
-                </div>
-            )}
-
             {/* API Keys */}
             <section className="space-y-3">
                 <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wider">API Keys</h3>
@@ -129,22 +221,30 @@ export function SettingsPage() {
                     <div>
                         <label className="block text-sm font-medium text-gray-300 mb-1">TMDB API Key</label>
                         <div className="relative">
-                            <input
+                            {/* Masked mode starts empty (placeholder shows the saved key's tail) so the
+                                "***abcd" mask can never be saved back as the key */}
+                            <DraftInput
                                 type={showKey ? "text" : "password"}
                                 className="w-full bg-gray-900 border border-gray-700 rounded-lg pl-4 pr-12 py-2 text-white focus:ring-2 focus:ring-blue-500 outline-none font-mono text-sm"
-                                placeholder="Enter your TMDB API Key"
-                                value={settings.TMDB_API_KEY || ''}
-                                onChange={(e) => updateSetting('TMDB_API_KEY', e.target.value)}
+                                placeholder={settings.TMDB_API_KEY ? `Saved (${settings.TMDB_API_KEY}) - type to replace` : "Enter your TMDB API Key"}
+                                value={showKey ? (settings.TMDB_API_KEY || '') : ''}
+                                onSave={(v) => v.trim() ? updateSetting('TMDB_API_KEY', v.trim()) : Promise.resolve(null)}
                             />
                             <button
                                 onClick={() => setShowKey(!showKey)}
+                                aria-label={showKey ? "Hide key" : "Show key"}
                                 className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 hover:text-white"
                                 title={showKey ? "Hide Key" : "Show Key"}
                             >
                                 {showKey ? <EyeOff size={16} /> : <Eye size={16} />}
                             </button>
                         </div>
-                        <p className="text-xs text-gray-500 mt-1">Required for Movie & TV metadata.</p>
+                        <p className="text-xs text-gray-500 mt-1">
+                            Required for Movie & TV metadata. The key is checked with TMDB when you save.{' '}
+                            <a href="https://www.themoviedb.org/settings/api" target="_blank" rel="noreferrer" className="inline-flex items-center gap-0.5 text-blue-400 hover:underline">
+                                Get a free key <ExternalLink size={10} />
+                            </a>
+                        </p>
                     </div>
                 </div>
             </section>
@@ -212,113 +312,18 @@ export function SettingsPage() {
                 <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Naming Templates</h3>
                 <div className="bg-gray-800/50 rounded-xl p-6 border border-gray-700 space-y-6">
 
-                    {/* Movies */}
-                    <div>
-                        <div className="flex justify-between items-center mb-1">
-                            <label className="block text-sm font-medium text-gray-300">Movies</label>
-                            <select
-                                className="bg-gray-900 text-xs text-gray-400 border border-gray-700 rounded px-2 py-1 outline-none focus:border-blue-500"
-                                onChange={(e) => {
-                                    const val = e.target.value;
-                                    if (val !== 'custom') updateSetting('MOVIE_TEMPLATE', val);
-                                }}
-                                value={getPresetValue(settings.MOVIE_TEMPLATE, 'movies')}
-                            >
-                                <option value="custom" disabled>Custom</option>
-                                {PRESETS.movies.map((p, i) => (
-                                    <option key={i} value={p.value}>{p.name}</option>
-                                ))}
-                            </select>
-                        </div>
-                        <input
-                            type="text"
-                            className="w-full bg-gray-900 border border-gray-700 rounded-lg px-4 py-2 text-white font-mono text-sm focus:ring-2 focus:ring-blue-500 outline-none"
-                            value={settings.MOVIE_TEMPLATE}
-                            onChange={(e) => updateSetting('MOVIE_TEMPLATE', e.target.value)}
+                    {templateFields.map(field => (
+                        <TemplateField
+                            key={field.key}
+                            label={field.label}
+                            value={settings[field.key]}
+                            defaultValue={settings.DEFAULT_TEMPLATES?.[field.key]}
+                            mediaType={field.mediaType}
+                            presets={field.presets}
+                            variables={field.variables}
+                            onSave={(v) => updateSetting(field.key, v)}
                         />
-                        <p className="text-xs text-gray-500 mt-1">Available: {'{title}, {year}, {ext}'}</p>
-                    </div>
-
-                    {/* TV */}
-                    <div>
-                        <div className="flex justify-between items-center mb-1">
-                            <label className="block text-sm font-medium text-gray-300">TV Shows</label>
-                            <select
-                                className="bg-gray-900 text-xs text-gray-400 border border-gray-700 rounded px-2 py-1 outline-none focus:border-blue-500"
-                                onChange={(e) => {
-                                    const val = e.target.value;
-                                    if (val !== 'custom') updateSetting('TV_TEMPLATE', val);
-                                }}
-                                value={getPresetValue(settings.TV_TEMPLATE, 'tv')}
-                            >
-                                <option value="custom" disabled>Custom</option>
-                                {PRESETS.tv.map((p, i) => (
-                                    <option key={i} value={p.value}>{p.name}</option>
-                                ))}
-                            </select>
-                        </div>
-                        <input
-                            type="text"
-                            className="w-full bg-gray-900 border border-gray-700 rounded-lg px-4 py-2 text-white font-mono text-sm focus:ring-2 focus:ring-blue-500 outline-none"
-                            value={settings.TV_TEMPLATE}
-                            onChange={(e) => updateSetting('TV_TEMPLATE', e.target.value)}
-                        />
-                        <p className="text-xs text-gray-500 mt-1">Available: {'{title}, {season}, {episode}, {episode_title}, {ext}'}</p>
-                    </div>
-
-                    {/* Books */}
-                    <div>
-                        <div className="flex justify-between items-center mb-1">
-                            <label className="block text-sm font-medium text-gray-300">Books (Ebooks)</label>
-                            <select
-                                className="bg-gray-900 text-xs text-gray-400 border border-gray-700 rounded px-2 py-1 outline-none focus:border-blue-500"
-                                onChange={(e) => {
-                                    const val = e.target.value;
-                                    if (val !== 'custom') updateSetting('BOOK_TEMPLATE', val);
-                                }}
-                                value={getPresetValue(settings.BOOK_TEMPLATE, 'books')}
-                            >
-                                <option value="custom" disabled>Custom</option>
-                                {PRESETS.books.map((p, i) => (
-                                    <option key={i} value={p.value}>{p.name}</option>
-                                ))}
-                            </select>
-                        </div>
-                        <input
-                            type="text"
-                            className="w-full bg-gray-900 border border-gray-700 rounded-lg px-4 py-2 text-white font-mono text-sm focus:ring-2 focus:ring-blue-500 outline-none"
-                            value={settings.BOOK_TEMPLATE}
-                            onChange={(e) => updateSetting('BOOK_TEMPLATE', e.target.value)}
-                        />
-                        <p className="text-xs text-gray-500 mt-1">Available: {'{author}, {title}, {year}, {ext}'}</p>
-                    </div>
-
-                    {/* Audiobooks */}
-                    <div>
-                        <div className="flex justify-between items-center mb-1">
-                            <label className="block text-sm font-medium text-gray-300">Audiobooks</label>
-                            <select
-                                className="bg-gray-900 text-xs text-gray-400 border border-gray-700 rounded px-2 py-1 outline-none focus:border-blue-500"
-                                onChange={(e) => {
-                                    const val = e.target.value;
-                                    if (val !== 'custom') updateSetting('AUDIOBOOK_TEMPLATE', val);
-                                }}
-                                value={getPresetValue(settings.AUDIOBOOK_TEMPLATE, 'books')}
-                            >
-                                <option value="custom" disabled>Custom</option>
-                                {PRESETS.books.map((p, i) => (
-                                    <option key={i} value={p.value}>{p.name}</option>
-                                ))}
-                            </select>
-                        </div>
-                        <input
-                            type="text"
-                            className="w-full bg-gray-900 border border-gray-700 rounded-lg px-4 py-2 text-white font-mono text-sm focus:ring-2 focus:ring-blue-500 outline-none"
-                            value={settings.AUDIOBOOK_TEMPLATE}
-                            onChange={(e) => updateSetting('AUDIOBOOK_TEMPLATE', e.target.value)}
-                        />
-                        <p className="text-xs text-gray-500 mt-1">Available: {'{author}, {title}, {year}, {ext}'}</p>
-                    </div>
+                    ))}
                 </div>
             </section>
         </div>
