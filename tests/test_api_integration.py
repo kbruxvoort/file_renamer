@@ -1,8 +1,9 @@
 import pytest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 from fastapi.testclient import TestClient
 from pathlib import Path
 from src.api import app
+import src.api as api
 from src.config import config
 from src.undo import undo_manager
 
@@ -164,24 +165,61 @@ def test_execute_skips_unmatched_files(temp_env):
     assert unknown.exists()
     assert not any(dest_dir.iterdir())
 
-def test_execute_cleanup_stops_at_scanned_folder(temp_env):
-    source_dir, dest_dir = temp_env
-    # SOURCE_DIR not set: cleanup must be bounded by the folder the user scanned
-    config.file_config.pop("SOURCE_DIR")
-    scanned = source_dir / "Downloads"
-    scanned.mkdir()
-    movie = scanned / "Movie.mkv"
-    movie.touch()
-
-    response = client.post("/execute", json={
-        "files": [{"original_path": str(movie), "selected_candidate": {"title": "Movie", "year": 2020, "type": "movie"}}],
+def _move_tv(files, scanned):
+    return client.post("/execute", json={
+        "files": [{"original_path": str(f), "selected_candidate": {"title": "The Bear", "type": "tv", "id": 1}} for f in files],
         "source_roots": [str(scanned)],
     })
 
+def test_execute_removes_scanned_release_folder_once_empty(temp_env):
+    """Scanning a release folder directly: once every episode has moved, the folder goes."""
+    source_dir, dest_dir = temp_env
+    config.file_config.pop("SOURCE_DIR")
+    scanned = source_dir / "The.Bear.S05.1080p.WEB-DL"
+    scanned.mkdir()
+    episodes = [scanned / f"The.Bear.S05E0{i}.mkv" for i in (1, 2)]
+    for e in episodes:
+        e.touch()
+
+    with patch.object(api.tmdb_client, "get_episode_details", AsyncMock(return_value={})):
+        assert _move_tv(episodes, scanned).status_code == 200
+
+    assert not scanned.exists()
+    assert source_dir.exists()  # never above the scanned folder
+
+def test_execute_keeps_scanned_folder_with_leftover_files(temp_env):
+    source_dir, dest_dir = temp_env
+    config.file_config.pop("SOURCE_DIR")
+    scanned = source_dir / "The.Bear.S05"
+    scanned.mkdir()
+    episode = scanned / "The.Bear.S05E01.mkv"
+    episode.touch()
+    (scanned / "notes.txt").touch()
+
+    with patch.object(api.tmdb_client, "get_episode_details", AsyncMock(return_value={})):
+        _move_tv([episode], scanned)
+
+    assert scanned.exists() and (scanned / "notes.txt").exists()
+
+def test_execute_never_removes_protected_scanned_folder(temp_env, tmp_path):
+    """Scanning ~/Downloads must not delete Downloads, even when it ends up empty."""
+    source_dir, dest_dir = temp_env
+    config.file_config.pop("SOURCE_DIR")
+    home = tmp_path / "home"
+    downloads = home / "Downloads"
+    downloads.mkdir(parents=True)
+    movie = downloads / "Movie.mkv"
+    movie.touch()
+
+    with patch("pathlib.Path.home", return_value=home):
+        response = client.post("/execute", json={
+            "files": [{"original_path": str(movie), "selected_candidate": {"title": "Movie", "year": 2020, "type": "movie"}}],
+            "source_roots": [str(downloads)],
+        })
+
     assert response.status_code == 200
     assert not movie.exists()
-    assert scanned.exists()
-    assert source_dir.exists()
+    assert downloads.exists()
 
 def test_execute_records_actual_associated_destination(temp_env):
     source_dir, dest_dir = temp_env

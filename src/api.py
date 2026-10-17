@@ -498,9 +498,13 @@ def _move_with_sidecars(original: Path, target_main: Path, cleanup_roots: List[P
         except Exception as e:
             logger.warning(f"Failed to move associated file {assoc}: {e}")
 
-    # 4. Clean up now-empty source folders, but never above the scanned folder
+    # 4. Clean up now-empty source folders, never above the scanned folder. The scanned
+    # folder itself goes too once empty (e.g. a TV release folder), unless it's a
+    # protected location like Downloads, the source folder or a library folder.
     source_root = filesystem.find_root(original.parent, cleanup_roots)
-    filesystem.clean_empty_dirs(original.parent, root_path=source_root)
+    if source_root is not None:
+        remove_root = not filesystem.is_protected(source_root, config.protected_dirs())
+        filesystem.clean_empty_dirs(original.parent, root_path=source_root, remove_root=remove_root)
     return moved
 
 

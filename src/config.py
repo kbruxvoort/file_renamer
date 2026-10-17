@@ -20,7 +20,7 @@ DEFAULT_TEMPLATES = {
 class Config:
     def __init__(self):
         self._load_from_file()
-        
+
     def _load_from_file(self):
         self.file_config = {}
         if CONFIG_PATH.exists():
@@ -75,7 +75,7 @@ class Config:
     @property
     def MOVIE_TEMPLATE(self):
         return self.file_config.get("MOVIE_TEMPLATE") or DEFAULT_TEMPLATES["MOVIE_TEMPLATE"]
-        
+
     @property
     def TV_TEMPLATE(self):
         return self.file_config.get("TV_TEMPLATE") or DEFAULT_TEMPLATES["TV_TEMPLATE"]
@@ -87,7 +87,7 @@ class Config:
     @property
     def AUDIOBOOK_TEMPLATE(self):
         return self.file_config.get("AUDIOBOOK_TEMPLATE") or DEFAULT_TEMPLATES["AUDIOBOOK_TEMPLATE"]
-    
+
     def library_dir(self, media_type) -> Path:
         """Library folder for a media type ('movie', 'tv', 'book', 'audiobook')."""
         return {
@@ -100,6 +100,13 @@ class Config:
     def library_dirs(self) -> list:
         """Every folder files can be moved into (per-type folders and DEST_DIR)."""
         return [self.library_dir(t) for t in MEDIA_TYPES] + [self.DEST_DIR]
+
+    def protected_dirs(self) -> list:
+        """Folders cleanup must never delete: the source and library folders,
+        and the home folder with its standard subfolders."""
+        home = Path.home()
+        standard = [home / name for name in ("Downloads", "Desktop", "Documents", "Videos", "Music", "Pictures")]
+        return [self.SOURCE_DIR, *self.library_dirs(), home, *standard]
 
     def save(self, key: str, value: str):
         self.file_config[key] = value
