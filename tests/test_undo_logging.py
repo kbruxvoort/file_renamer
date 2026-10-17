@@ -72,3 +72,34 @@ def test_logger_setup(tmp_path):
     assert logger.LOG_FILE.exists()
     content = logger.LOG_FILE.read_text(encoding='utf-8')
     assert "Test Log Entry" in content
+
+
+def test_history_in_old_from_to_format_can_be_undone(tmp_path):
+    """Batches recorded by older versions use 'from'/'to' instead of 'src'/'dest'."""
+    import json
+    src = tmp_path / "orig.mkv"
+    dest = tmp_path / "moved.mkv"
+    dest.write_text("content")
+    hist_file = tmp_path / "history.json"
+    hist_file.write_text(json.dumps([{"batch_id": "old", "timestamp": "2026-01-18T00:00:00",
+                                      "operations": [{"from": str(src), "to": str(dest)}]}]))
+
+    manager = UndoManager()
+    manager.history_file = hist_file
+    manager._load_history()
+    result = manager.undo_last_batch()
+
+    assert result["success"] is True
+    assert src.exists()
+
+
+def test_corrupt_history_is_backed_up_not_lost(tmp_path):
+    hist_file = tmp_path / "history.json"
+    hist_file.write_text("{not json")
+
+    manager = UndoManager()
+    manager.history_file = hist_file
+    manager._load_history()
+
+    assert manager.history == []
+    assert (tmp_path / "history.corrupt.json").read_text() == "{not json"

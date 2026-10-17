@@ -1,12 +1,12 @@
 import httpx
 from typing import Dict, Any, List
-from tenacity import retry, stop_after_attempt, wait_exponential
+from src.api_clients.retry import api_retry
 
 class ITunesAudiobookClient:
     """Client for iTunes Search API (Audiobooks)"""
     BASE_URL = "https://itunes.apple.com/search"
 
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
+    @api_retry
     async def search_book(self, query: str) -> List[Dict[str, Any]]:
         """Search for audiobooks."""
         async with httpx.AsyncClient() as client:

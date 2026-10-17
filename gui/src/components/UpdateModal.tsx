@@ -9,9 +9,11 @@ interface UpdateModalProps {
     onConfirm: () => void;
     progress: number;
     error: string | null;
+    needsRestart?: boolean;
+    onRestart?: () => void;
 }
 
-export function UpdateModal({ isOpen, onClose, update, status, onConfirm, progress, error }: UpdateModalProps) {
+export function UpdateModal({ isOpen, onClose, update, status, onConfirm, progress, error, needsRestart, onRestart }: UpdateModalProps) {
     if (!isOpen || !update) return null;
 
     const isDownloading = status === 'downloading' || status === 'installing';
@@ -109,6 +111,14 @@ export function UpdateModal({ isOpen, onClose, update, status, onConfirm, progre
                         >
                             Remind Me Later
                         </button>
+                        {needsRestart ? (
+                        <button
+                            onClick={onRestart}
+                            className="flex items-center gap-2 px-6 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-sm font-bold transition-colors shadow-lg shadow-blue-900/20"
+                        >
+                            Restart Sortify
+                        </button>
+                        ) : (
                         <button
                             onClick={onConfirm}
                             className="flex items-center gap-2 px-6 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-sm font-bold transition-colors shadow-lg shadow-blue-900/20"
@@ -116,6 +126,7 @@ export function UpdateModal({ isOpen, onClose, update, status, onConfirm, progre
                             <Download size={18} />
                             Update Now
                         </button>
+                        )}
                     </div>
                 )}
             </div>

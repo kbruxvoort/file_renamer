@@ -1,6 +1,9 @@
+import os
 import shutil
 from pathlib import Path
-from typing import List, Optional
+from typing import Iterable, List, Optional
+
+from src.scanner import ALL_EXTENSIONS
 
 def get_unique_path(path: Path) -> Path:
     """
@@ -53,6 +56,11 @@ def find_associated_files(main_file: Path) -> List[Path]:
                      # Should catch if extensions match but we already excluded main_file
                      continue
                      
+                # Other media files are separate items (e.g. "Movie - Director's Cut.mkv"),
+                # never sidecars of this one
+                if item.suffix.lower() in ALL_EXTENSIONS:
+                    continue
+
                 if remainder[0] in {'.', '-', '_', ' '}:
                     associated.append(item)
                     
@@ -74,16 +82,37 @@ def move_file(source: Path, destination: Path) -> Path:
     
     return final_dest
 
-def clean_empty_dirs(path: Path, root_path: Optional[Path] = None):
+def is_within(path: Path, root: Path) -> bool:
+    """True if `path` is `root` or inside it (case-insensitive on Windows)."""
+    try:
+        path = Path(os.path.normcase(os.path.abspath(path)))
+        root = Path(os.path.normcase(os.path.abspath(root)))
+    except (OSError, ValueError):
+        return False
+    return path == root or root in path.parents
+
+
+def is_same_path(a: Path, b: Path) -> bool:
+    """True if both point at the same location (case-insensitive on Windows)."""
+    return os.path.normcase(os.path.abspath(a)) == os.path.normcase(os.path.abspath(b))
+
+
+def find_root(path: Path, roots: Iterable[Optional[Path]]) -> Optional[Path]:
+    """Returns the deepest root directory that contains `path`, if any."""
+    matches = [r for r in roots if r and is_within(path, r)]
+    return max(matches, key=lambda r: len(str(r)), default=None)
+
+
+def clean_empty_dirs(path: Path, root_path: Optional[Path]):
     """
-    Recursively deletes empty directories starting from `path` walking up.
-    Stops if it hits `root_path` or a non-empty directory.
+    Deletes empty directories starting from `path` and walking up.
+    Stops at a non-empty directory, and never deletes `root_path` or anything
+    outside it. Does nothing without a root.
     """
-    if not path.is_dir():
+    if root_path is None or not path.is_dir():
         return
 
-    # Don't delete beyond root_path if specified
-    if root_path and path == root_path:
+    if not is_within(path, root_path) or is_within(root_path, path):
         return
         
     try:

@@ -1,11 +1,89 @@
 import re
+import logging
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, Optional, Any
+
+import httpx
 
 from src.api_clients.tmdb import tmdb_client
 from src.api_clients.books import books_client
 from src.api_clients.itunes import itunes_client
 from src.config import config
+from src.scanner import AUDIO_EXTENSIONS, BOOK_EXTENSIONS
+from src.api_clients.retry import MissingApiKeyError
+
+logger = logging.getLogger(__name__)
+
+# Characters that are illegal in Windows file/folder names (plus control chars).
+# '/' and '\' are handled separately so values can't introduce extra folder levels.
+ILLEGAL_PATH_CHARS = re.compile(r'[<>"|?*\x00-\x1f]')
+
+# A folder that names a season: "Season 1", "Series 02", "S01" (whole name only for the short form)
+SEASON_FOLDER_PATTERN = re.compile(r'\b(?:season|series)[\s._-]*(\d{1,3})\b|^s(\d{1,3})$', re.IGNORECASE)
+
+
+RELEASE_TAG_PATTERN = re.compile(
+    r'\b(?:\d{3,4}p|hdtv|web(?:-?dl|rip)?|blu-?ray|bdrip|dvdrip|hdrip|x26[45]|h\.?26[45]|hevc|xvid|aac\d?|ac3|dts|proper|repack)\b.*$',
+    re.IGNORECASE,
+)
+
+
+def _clean_episode_title(raw: str) -> Optional[str]:
+    title = RELEASE_TAG_PATTERN.sub('', raw.replace('.', ' ')).strip(' -_')
+    return title or None
+
+
+PROVIDERS = {'movie': 'TMDB', 'tv': 'TMDB', 'book': 'Google Books', 'audiobook': 'iTunes'}
+
+
+def describe_lookup_error(e: Exception, media_type: Optional[str]) -> str:
+    """A short, user-facing explanation of a failed metadata lookup."""
+    provider = PROVIDERS.get(media_type or '', 'The metadata service')
+    if isinstance(e, MissingApiKeyError):
+        return str(e)
+    if isinstance(e, httpx.HTTPStatusError):
+        status = e.response.status_code
+        if status == 429:
+            return f"{provider} is limiting requests right now, so some files weren't matched. Rescan in a minute."
+        if status == 401:
+            return f"{provider} rejected the API key. Check it in Settings."
+        return f"{provider} returned an error (HTTP {status}), so some files weren't matched."
+    if isinstance(e, httpx.TransportError):
+        return f"Couldn't reach {provider}. Check your internet connection and rescan."
+    return f"{provider} lookup failed: {e}"
+
+
+class TemplateError(ValueError):
+    """The configured naming template can't produce a path for this file."""
+
+
+def _max_year() -> int:
+    """Latest plausible release year (next year, for early releases)."""
+    return datetime.now().year + 1
+
+
+def _truncate(text: Optional[str], length: int) -> str:
+    if not text:
+        return ''
+    return text if len(text) <= length else text[:length].rstrip() + "..."
+
+
+def _clean_value(value: Any) -> str:
+    """Makes a single metadata value safe to drop into one path component."""
+    if value is None:
+        return ''
+    text = str(value).replace(':', ' -').replace('/', '-').replace('\\', '-')
+    return ILLEGAL_PATH_CHARS.sub('', text)
+
+
+def _clean_component(part: str) -> str:
+    """Tidies a formatted path component: drops empty brackets, collapses spaces,
+    and strips the trailing spaces/dots/dashes Windows can't handle."""
+    part = ILLEGAL_PATH_CHARS.sub('', part.replace(':', ''))
+    part = re.sub(r'\(\s*\)|\[\s*\]', '', part)
+    part = re.sub(r'\s{2,}', ' ', part)
+    return part.strip().rstrip(' .-').strip()
 
 class Renamer:
     def parse_filename(self, file_path: Path | str) -> Dict[str, str]:
@@ -17,16 +95,16 @@ class Renamer:
         path_obj = Path(file_path)
         filename = path_obj.name
         ext = path_obj.suffix.lower()
-        
+
         # Audiobooks / Books
         # Simple heuristic: if extension is typical for books/audiobooks
-        if ext in {'.epub', '.pdf', '.mobi', '.azw3', '.m4b', '.mp3'}:
-             if ext in {'.m4b', '.mp3'}:
+        if ext in BOOK_EXTENSIONS or ext in AUDIO_EXTENSIONS:
+             if ext in AUDIO_EXTENSIONS:
                  info['type'] = 'audiobook'
                  info['is_audio'] = True
              else:
                  info['type'] = 'book'
-             
+
              # Remove extension for title guess
              info['title'] = path_obj.stem.replace('.', ' ').strip()
              return info
@@ -34,7 +112,7 @@ class Renamer:
         # 1. Try Standard TV pattern first (SxxExx)
         # Matches: Show.S01E01.Title.mkv or Show S01E01 Title.mkv
         tv_pattern = re.search(r'(.+?)[ .][sS](\d{1,2})[eE](\d{1,2})(?:[ .-]*(.+?))?$', path_obj.stem)
-        
+
         # 1b. Try "2x01" Pattern
         # Matches: Show - 2x01 - Title.mkv
         if not tv_pattern:
@@ -44,7 +122,7 @@ class Renamer:
                  info['season'] = int(tv_pattern_b.group(2))
                  info['episode'] = int(tv_pattern_b.group(3))
                  if tv_pattern_b.group(4):
-                      info['episode_title'] = tv_pattern_b.group(4).replace('.', ' ').strip(' -')
+                      info['episode_title'] = _clean_episode_title(tv_pattern_b.group(4))
                  info['type'] = 'tv'
                  return info
 
@@ -52,31 +130,31 @@ class Renamer:
             info['title'] = tv_pattern.group(1).replace('.', ' ').strip()
             info['season'] = int(tv_pattern.group(2))
             info['episode'] = int(tv_pattern.group(3))
-            
+
             # Extract optional episode title from suffix
             if tv_pattern.group(4):
                  # simplistic clean: replace dots maybe?
-                 info['episode_title'] = tv_pattern.group(4).replace('.', ' ').strip()
-                 
+                 info['episode_title'] = _clean_episode_title(tv_pattern.group(4))
+
             info['type'] = 'tv'
             return info
-            
+
         # 2. Try Smart Parsing (Folder Context)
         try:
             parent_name = path_obj.parent.name
-            season_match = re.search(r'(?:season|s)\s*(\d+)', parent_name, re.IGNORECASE)
-            
+            season_match = SEASON_FOLDER_PATTERN.search(parent_name.strip())
+
             if season_match:
                 # We found a Season folder!
-                info['season'] = int(season_match.group(1))
+                info['season'] = int(season_match.group(1) or season_match.group(2))
                 info['type'] = 'tv'
-                
+
                 # Grandparent is likely the show name
                 # Clean up year if present in show folder name e.g. "Show Name (2020)"
                 show_folder = path_obj.parent.parent.name
                 show_match = re.match(r'(.+?)(?:\s*\(\d{4}\))?$', show_folder)
                 info['title'] = (show_match.group(1) if show_match else show_folder).strip()
-                
+
                 # Try to find Episode Number in filename (relaxed)
                 # Look for number at start, or "E01", or just "01 - "
                 ep_match = re.search(r'(?:[eE]|^|\s)(\d{1,2})(?:$|\s|\.|-)', path_obj.stem)
@@ -85,7 +163,7 @@ class Renamer:
                 else:
                     # Fallback default if we can't find numbering
                     info['episode'] = 1
-                    
+
                 return info
         except Exception:
             # If path logic fails (e.g. no parent), fall through
@@ -97,7 +175,7 @@ class Renamer:
         if anime_pattern:
             potential_ep = int(anime_pattern.group(2))
             # Heuristic: If it looks like a year, it's probably a movie, skip this.
-            if not (1900 < potential_ep < 2030):
+            if not (1900 < potential_ep <= _max_year()):
                 info['title'] = anime_pattern.group(1).replace('.', ' ').strip()
                 info['season'] = 1 # Default to Season 1 for absolute numbering
                 info['episode'] = potential_ep
@@ -107,20 +185,15 @@ class Renamer:
         # 4. Try Movie pattern (Year)
         # Find all 4-digit numbers
         matches = list(re.finditer(r'(?:^|[ .\(])(\d{4})(?:$|[ .\)])', filename))
-        
+
         # Iterate matches in reverse (years usually at end)
         for match in reversed(matches):
             potential_year = int(match.group(1))
-            if 1880 < potential_year < 2030:
+            if 1880 < potential_year <= _max_year():
                 # Valid year found
                 info['year'] = potential_year
-                
+
                 # Title is everything before the year
-                # Find start index of match in original string
-                match_start = match.start(1)
-                # Adjust for potential separator captured in group 0 if regex was different
-                # But here we used lookarounds or non-capturing.
-                # Simplest: title is raw string before this year match
                 raw_title = filename[:match.start()]
                 info['title'] = raw_title.replace('.', ' ').strip(' ()-')
                 info['type'] = 'movie'
@@ -130,18 +203,19 @@ class Renamer:
         # Fallback to just title
         if not info.get('type'):
             pass # Fall through to default
-            
+
         # Fallback
         info['title'] = path_obj.stem
         info['type'] = 'unknown'
         return info
 
-    async def get_candidates(self, parsed_info: Dict[str, Any], cached_season_data: Optional[Dict[str, Any]] = None, cached_show_metadata: Optional[Dict[str, Any]] = None, cached_all_candidates: Optional[list] = None) -> list[Dict[str, Any]]:
+    async def get_candidates(self, parsed_info: Dict[str, Any], cached_season_data: Optional[Dict[str, Any]] = None, cached_show_metadata: Optional[Dict[str, Any]] = None, cached_all_candidates: Optional[list] = None, errors: Optional[list] = None) -> list[Dict[str, Any]]:
         """
         Queries APIs to get list of potential metadata matches.
+        Lookup failures are logged and, when `errors` is given, appended to it.
         """
         candidates = []
-        
+
         try:
             if parsed_info['type'] == 'movie':
                 results = await tmdb_client.search_movie(parsed_info['title'], parsed_info.get('year'))
@@ -153,24 +227,23 @@ class Renamer:
                         candidates.append({
                             'title': res['title'],
                             'year': year,
-                            'overview': res.get('overview', '')[:100] + "...",
+                            'overview': _truncate(res.get('overview'), 100),
                             'id': res['id'],
                             'type': 'movie',
                             'score': res.get('vote_average', 0),
                             'poster_path': res.get('poster_path')
                         })
-            
+
             elif parsed_info['type'] == 'tv':
                 # Path A: Using Cached Candidates (return ALL cached candidates)
                 if cached_all_candidates:
                     # Return all cached candidates, but enrich the first one with episode details
                     for i, base_cand in enumerate(cached_all_candidates):
                         cand = base_cand.copy()
-                        
+
                         # Only fetch episode details for the first/primary candidate
                         if i == 0 and parsed_info.get('season') and parsed_info.get('episode'):
                             episode_title = parsed_info.get('episode_title')
-                            year = cand.get('year')
                             try:
                                 details = {}
                                 if cached_season_data and str(parsed_info['season']) == str(cached_season_data.get('season_number')):
@@ -179,38 +252,33 @@ class Renamer:
                                         if ep.get('episode_number') == ep_num:
                                             details = ep
                                             break
-                                
+
                                 if not details and 'id' in cand:
                                     details = await tmdb_client.get_episode_details(
-                                        cand['id'], 
-                                        parsed_info['season'], 
+                                        cand['id'],
+                                        parsed_info['season'],
                                         parsed_info['episode']
                                     )
-                                    
+
                                 if details:
                                     episode_title = details.get('name', episode_title)
-                                    air_date = details.get('air_date', '')
-                                    if air_date:
-                                        year = int(air_date.split('-')[0])
                             except Exception as e:
-                                print(f"Failed to fetch episode details (Cache Path): {e}")
-                            
+                                logger.warning(f"Failed to fetch episode details (cache path): {e}")
+
                             cand['episode_title'] = episode_title
-                            cand['year'] = year
-                        
+
                         candidates.append(cand)
-                
+
                 # Path B: No Cache - Perform fresh search
                 elif not cached_all_candidates:
                     results = await tmdb_client.search_tv(parsed_info['title'])
-                
+
                     if results.get('results'):
                         # Top result is most likely match
                         top_match = results['results'][0]
                         # Fetch extra details for top match if we have season/ep info
                         episode_title = parsed_info.get('episode_title') # From filename as default
-                        year = None
-                        
+
                         if top_match and parsed_info.get('season') and parsed_info.get('episode'):
                              try:
                                  details = {}
@@ -221,46 +289,43 @@ class Renamer:
                                          if ep.get('episode_number') == ep_num:
                                              details = ep
                                              break
-                                 
+
                                  if not details:
                                      details = await tmdb_client.get_episode_details(
-                                         top_match['id'], 
-                                         parsed_info['season'], 
+                                         top_match['id'],
+                                         parsed_info['season'],
                                          parsed_info['episode']
                                      )
 
                                  if details:
                                      episode_title = details.get('name', episode_title)
-                                     air_date = details.get('air_date', '')
-                                     if air_date:
-                                         year = int(air_date.split('-')[0])
                              except Exception as e:
-                                 print(f"Failed to fetch episode details: {e}")
+                                 logger.warning(f"Failed to fetch episode details: {e}")
 
                         # Normalize TMDB TV results
                         for i, res in enumerate(results['results'][:5]):
-                            # For the top result (index 0), use the fetched year/ep title
-                            # For others, we don't fetch deep details to save API calls
-                            cand_year = year if i == 0 else (int(res.get('first_air_date', '').split('-')[0]) if res.get('first_air_date') else None)
+                            # Only the top result gets the episode title; others skip the extra API call
+                            first_air = res.get('first_air_date') or ''
+                            cand_year = int(first_air.split('-')[0]) if first_air else None
                             cand_ep_title = episode_title if i == 0 else None
-                            
+
                             candidates.append({
                                 'title': res['name'],
                                 'year': cand_year,
                                 'episode_title': cand_ep_title,
-                                'overview': res.get('overview', '')[:100] + "...",
+                                'overview': _truncate(res.get('overview'), 100),
                                 'id': res['id'],
                                 'type': 'tv',
                                 'score': res.get('vote_average', 0),
                                 'poster_path': res.get('poster_path')
                             })
-            
+
             elif parsed_info['type'] in ('audiobook', 'book'):
                 # ... (Existing book logic omitted for brevity, keeping it same)
                  # Determine if audiobook or ebook
                  # Legacy: some inputs might be manual searches with just 'book'
                  is_audio = (parsed_info.get('type') == 'audiobook') or parsed_info.get('is_audio', False)
-                 
+
                  if is_audio:
                      # Use iTunes for Audiobooks
                      results = await itunes_client.search_book(parsed_info['title'])
@@ -273,7 +338,7 @@ class Renamer:
                              artwork = item.get('artworkUrl100')
                              if artwork:
                                  artwork = artwork.replace('100x100', '600x600') # Better quality
-                             
+
                              date = item.get('releaseDate', '')
                              year = int(date.split('-')[0]) if date else None
 
@@ -297,11 +362,11 @@ class Renamer:
                                  author = vol['authors'][0]
                              else:
                                  author = "Unknown"
-                             
+
                              # Google books uses 'imageLinks' -> 'thumbnail'
                              img_links = vol.get('imageLinks', {})
                              thumbnail = img_links.get('thumbnail') or img_links.get('smallThumbnail')
-                                 
+
                              candidates.append({
                                  'title': vol.get('title', 'Unknown'),
                                  'year': year,
@@ -312,74 +377,100 @@ class Renamer:
                              })
 
         except Exception as e:
-            # print(f"API Error: {e}") 
-            pass
-            
+            logger.warning(f"Metadata lookup failed for '{parsed_info.get('title')}' ({parsed_info.get('type')}): {e}")
+            if errors is not None:
+                errors.append(describe_lookup_error(e, parsed_info.get('type')))
+
         return candidates
 
     def propose_new_path(self, current_path: Path, metadata: Dict[str, Any]) -> Path:
         """
-        Generates a new path based on metadata and Plex standards.
+        Generates a new path (relative to the library folder) based on metadata
+        and the configured naming template.
         """
         ext = current_path.suffix
-        context = metadata.copy()
-        
-        # Ensure context has defaults for formatting
-        context['ext'] = ext
-        context.setdefault('title', 'Unknown')
-        context.setdefault('year', '')
-        context.setdefault('resolution', '')
-        context.setdefault('group', '')
-        
-        # Zero-pad season/episode if present, else empty
-        if 'season' in context and context['season'] is not None:
-             context['season'] = f"{int(context['season']):02d}"
+        ftype = metadata.get('type')
+
+        if ftype == 'movie':
+            template = config.MOVIE_TEMPLATE
+        elif ftype == 'tv':
+            template = config.TV_TEMPLATE
+        elif ftype in ('book', 'audiobook'):
+            is_audio = ftype == 'audiobook' or metadata.get('is_audio')
+            template = config.AUDIOBOOK_TEMPLATE if is_audio else config.BOOK_TEMPLATE
         else:
-             context['season'] = '00'
-             
-        if 'episode' in context and context['episode'] is not None:
-             context['episode'] = f"{int(context['episode']):02d}"
-        else:
-             context['episode'] = '00'
-             
-        # Episode Title Default
-        if 'episode_title' not in context or not context['episode_title']:
-             context['episode_title'] = f"Episode {context['episode']}"
+            return Path(current_path.name)
 
         try:
-            if metadata.get('type') == 'movie':
-                # Template
-                rel = config.MOVIE_TEMPLATE.format(**context)
-                
-            elif metadata.get('type') == 'tv':
-                rel = config.TV_TEMPLATE.format(**context)
-    
-            elif metadata.get('type') in ('book', 'audiobook'):
-                context['author'] = context.get('author', 'Unknown Author')
-                is_audio = (metadata.get('type') == 'audiobook') or metadata.get('is_audio')
-                if is_audio:
-                    rel = config.AUDIOBOOK_TEMPLATE.format(**context)
-                else:
-                    rel = config.BOOK_TEMPLATE.format(**context)
-            else:
-                return Path(current_path.name)
+            return render_template(template, metadata, ext)
+        except (KeyError, ValueError, IndexError, AttributeError) as e:
+            # Bad template (unknown key, unbalanced braces, no {ext}, ...). Never fall back to
+            # the bare filename: that would drop the file into the library root.
+            logger.error(f"Template error in '{template}': {e!r}")
+            raise TemplateError(f"The {ftype} naming template is invalid: {e}") from e
 
-            # Cleanup: Remove empty parens "()" from empty years
-            rel = rel.replace('()', '').replace('  ', ' ')
-            
-            # Sanitization (Simple)
-            # Remove chars illegal in Windows/Unix paths after formatting
-            # Keep separators / and \
-            # Replace : with -
-            rel = rel.replace(':', ' -')
-            
-            return Path(rel.strip())
-                
-        except KeyError as e:
-            # Fallback if template uses unknown keys
-            print(f"Template Error: Missing key {e}")
-            return Path(current_path.name)
-            
-        return Path(current_path.name)
+
+def render_template(template: str, metadata: Dict[str, Any], ext: str) -> Path:
+    """
+    Fills a naming template with sanitized metadata values.
+    Raises KeyError/ValueError/IndexError for invalid templates.
+    """
+    context = {k: _clean_value(v) for k, v in metadata.items() if v is None or isinstance(v, (str, int, float))}
+
+    # Defaults for missing *or empty* values (a candidate may carry year=None)
+    defaults = {'title': 'Unknown', 'year': '', 'resolution': '', 'group': '', 'author': 'Unknown Author'}
+    for key, default in defaults.items():
+        if not context.get(key):
+            context[key] = default
+
+    # Zero-pad season/episode
+    for key in ('season', 'episode'):
+        try:
+            context[key] = f"{int(metadata[key]):02d}"
+        except (KeyError, TypeError, ValueError):
+            context[key] = '00'
+
+    if not context.get('episode_title'):
+        context['episode_title'] = f"Episode {context['episode']}"
+
+    context['ext'] = ext
+
+    rel = template.format(**context)
+
+    # Clean each folder/file component separately. Drop empty and '.'/'..'
+    # components so a template can never escape the library folder.
+    parts = re.split(r'[\\/]+', rel)
+    cleaned = []
+    for i, part in enumerate(parts):
+        is_last = i == len(parts) - 1
+        if is_last and ext and part.endswith(ext):
+            stem = _clean_component(part[:-len(ext)])
+            part = (stem or 'Unknown') + ext
+        else:
+            part = _clean_component(part)
+        if part and part not in ('.', '..'):
+            cleaned.append(part)
+
+    if not cleaned:
+        raise ValueError(f"Template '{template}' produced an empty path")
+    if ext and not cleaned[-1].endswith(ext):
+        raise ValueError("Template must end with {ext} so files keep their extension")
+    return Path(*cleaned)
+
+
+def validate_template(template: str) -> Optional[str]:
+    """Returns an error message if the template can't be rendered, else None."""
+    sample = {
+        'title': 'Title', 'year': 2000, 'season': 1, 'episode': 1,
+        'episode_title': 'Episode', 'author': 'Author',
+    }
+    try:
+        render_template(template, sample, '.mkv')
+    except KeyError as e:
+        return f"Unknown placeholder {e}. Available: {{title}}, {{year}}, {{season}}, {{episode}}, {{episode_title}}, {{author}}, {{ext}}"
+    except (ValueError, IndexError, AttributeError) as e:
+        return f"Invalid template: {e}"
+    return None
+
 
 renamer = Renamer()

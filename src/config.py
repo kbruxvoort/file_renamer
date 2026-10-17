@@ -8,6 +8,15 @@ load_dotenv()
 
 CONFIG_PATH = Path.home() / ".renamer_config.json"
 
+MEDIA_TYPES = ("movie", "tv", "book", "audiobook")
+
+DEFAULT_TEMPLATES = {
+    "MOVIE_TEMPLATE": "{title} ({year})/{title} ({year}){ext}",
+    "TV_TEMPLATE": "{title}/Season {season}/{title} - s{season}e{episode}{ext}",
+    "BOOK_TEMPLATE": "{author}/{title}/{title}{ext}",
+    "AUDIOBOOK_TEMPLATE": "{author}/{title}/{title}{ext}",
+}
+
 class Config:
     def __init__(self):
         self._load_from_file()
@@ -25,13 +34,9 @@ class Config:
         return os.getenv("TMDB_API_KEY") or self.file_config.get("TMDB_API_KEY")
 
     @property
-    def GOOG_BOOKS_API_KEY(self):
-         return os.getenv("GOOG_BOOKS_API_KEY") or self.file_config.get("GOOG_BOOKS_API_KEY")
-
-    @property
     def DEST_DIR(self):
         val = os.getenv("DEST_DIR") or self.file_config.get("DEST_DIR")
-        return Path(val) if val else Path("./organized")
+        return Path(val) if val else Path.home() / "Sortify Library"
 
     @property
     def MOVIE_DIR(self):
@@ -69,20 +74,33 @@ class Config:
     # Naming Templates
     @property
     def MOVIE_TEMPLATE(self):
-        return self.file_config.get("MOVIE_TEMPLATE", "{title} ({year})/{title} ({year}){ext}")
+        return self.file_config.get("MOVIE_TEMPLATE") or DEFAULT_TEMPLATES["MOVIE_TEMPLATE"]
         
     @property
     def TV_TEMPLATE(self):
-        return self.file_config.get("TV_TEMPLATE", "{title}/Season {season}/{title} - s{season}e{episode}{ext}")
+        return self.file_config.get("TV_TEMPLATE") or DEFAULT_TEMPLATES["TV_TEMPLATE"]
 
     @property
     def BOOK_TEMPLATE(self):
-        return self.file_config.get("BOOK_TEMPLATE", "{author}/{title}/{title}{ext}")
+        return self.file_config.get("BOOK_TEMPLATE") or DEFAULT_TEMPLATES["BOOK_TEMPLATE"]
 
     @property
     def AUDIOBOOK_TEMPLATE(self):
-        return self.file_config.get("AUDIOBOOK_TEMPLATE", "{author}/{title}/{title}{ext}")
+        return self.file_config.get("AUDIOBOOK_TEMPLATE") or DEFAULT_TEMPLATES["AUDIOBOOK_TEMPLATE"]
     
+    def library_dir(self, media_type) -> Path:
+        """Library folder for a media type ('movie', 'tv', 'book', 'audiobook')."""
+        return {
+            'movie': self.MOVIE_DIR,
+            'tv': self.TV_DIR,
+            'book': self.BOOK_DIR,
+            'audiobook': self.AUDIOBOOK_DIR,
+        }.get(media_type, self.DEST_DIR)
+
+    def library_dirs(self) -> list:
+        """Every folder files can be moved into (per-type folders and DEST_DIR)."""
+        return [self.library_dir(t) for t in MEDIA_TYPES] + [self.DEST_DIR]
+
     def save(self, key: str, value: str):
         self.file_config[key] = value
         CONFIG_PATH.write_text(json.dumps(self.file_config, indent=2))

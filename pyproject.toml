@@ -1,7 +1,7 @@
 [project]
 name = "file-renamer"
 version = "0.1.14"
-description = "Add your description here"
+description = "Sortify: scan, match and organize movies, TV, books and audiobooks"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
@@ -31,6 +31,10 @@ dev = [
     "ruff>=0.14.13",
     "pyinstaller>=6.11.1",
 ]
+
+[tool.pytest.ini_options]
+# Only the real test suite; scripts/ holds manual checks that hit live APIs
+testpaths = ["tests"]
 
 [build-system]
 requires = ["hatchling"]

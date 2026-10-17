@@ -2,11 +2,13 @@ import asyncio
 import typer
 from rich.console import Console
 from rich.table import Table
+from rich.prompt import Prompt
 from pathlib import Path
 from src.scanner import scan_directory
-from src.renamer import renamer
+from src.renamer import renamer, TemplateError
 from src.config import config
 from src.undo import undo_manager
+from src import filesystem
 from src.logger import setup_logging
 import logging
 
@@ -21,7 +23,6 @@ app = typer.Typer(
 )
 console = Console()
 
-from rich.prompt import Prompt
 
 async def run_scan(path: Path, dry_run: bool, interactive: bool, min_size: int):
     if not path.exists():
@@ -43,7 +44,7 @@ async def run_scan(path: Path, dry_run: bool, interactive: bool, min_size: int):
         files_found += 1
         with console.status(f"Processing [bold]{file_path.name}[/bold]..."):
             # 1. Parse filename locally
-            metadata = renamer.parse_filename(file_path.name)
+            metadata = renamer.parse_filename(file_path)
             
             # 2. Get Candidates (Async)
             candidates = await renamer.get_candidates(metadata)
@@ -66,22 +67,26 @@ async def run_scan(path: Path, dry_run: bool, interactive: bool, min_size: int):
                  # Auto-pick first
                  metadata.update(candidates[0])
             
+        if not candidates:
+            # Unmatched files stay put; they'd otherwise land in the library root
+            table.add_row(file_path.name, "[dim]no match - skipped[/dim]", metadata.get('type', 'unknown'))
+            continue
+
         # 3. Propose new path
-        new_relative_path = renamer.propose_new_path(file_path, metadata)
+        try:
+            new_relative_path = renamer.propose_new_path(file_path, metadata)
+        except TemplateError as e:
+            table.add_row(file_path.name, f"[red]{e}[/red]", metadata.get('type', 'unknown'))
+            continue
         
         # Construct full new destination path
-        new_full_path = config.DEST_DIR / new_relative_path
+        new_full_path = config.library_dir(metadata.get('type')) / new_relative_path
         
         table.add_row(file_path.name, str(new_relative_path), metadata.get('type', 'unknown'))
         
         if not dry_run:
-            # Create parent dirs and move file
-            target_path = new_full_path
-            if not target_path.parent.exists():
-                target_path.parent.mkdir(parents=True, exist_ok=True)
-            
-            import shutil
-            shutil.move(str(file_path), str(target_path))
+            # Creates parent dirs and avoids overwriting an existing file
+            target_path = filesystem.move_file(file_path, new_full_path)
             console.print(f"[green]Moved:[/green] {file_path.name} → {target_path}")
             
             moved_files.append({"src": str(file_path), "dest": str(target_path)})
@@ -139,13 +144,12 @@ def undo():
     console.print("[bold yellow]Attempting to undo last batch...[/bold yellow]")
     result = undo_manager.undo_last_batch()
     
-    if result['success']:
-        console.print(f"[green]Success![/green] Restored {result['restored_count']} files.")
-        if result['failures']:
-            console.print(f"[red]Generated {len(result['failures'])} errors during undo.[/red]")
-            for f in result['failures']:
-                console.print(f" - {f}")
-    else:
+    console.print(f"Restored {result['restored_count']} files.")
+    if result['failures']:
+        console.print(f"[red]{len(result['failures'])} files could not be restored:[/red]")
+        for f in result['failures']:
+            console.print(f" - {f['file']}: {f['error']}")
+    elif not result['success']:
         console.print(f"[red]Undo Failed:[/red] {result['message']}")
 
 if __name__ == "__main__":
