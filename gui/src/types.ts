@@ -35,3 +35,15 @@ export function parentDir(path: string): string {
 export function baseName(path: string): string {
     return path.split(/[/\\]/).pop() || path;
 }
+
+/**
+ * Shortens a path from the front so the meaningful end stays visible:
+ * "C:\Users\me\Media\Movies\Inception (2010)" -> "…\Movies\Inception (2010)".
+ * Long paths often share a prefix, so cutting the end makes them look identical.
+ */
+export function tailPath(path: string, segments = 3): string {
+    const parts = path.split(/[/\\]/).filter(Boolean);
+    if (parts.length <= segments) return path;
+    const sep = path.includes('\\') ? '\\' : '/';
+    return `…${sep}${parts.slice(-segments).join(sep)}`;
+}

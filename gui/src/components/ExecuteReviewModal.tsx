@@ -2,7 +2,7 @@ import { useMemo } from 'react';
 import { AlertTriangle, ArrowRightLeft, Film, Tv, Book, Headphones } from 'lucide-react';
 import { Modal } from './Modal';
 import { buttonStyles } from './buttonStyles';
-import { type FileItem, isMovable, parentDir } from '../types';
+import { type FileItem, isMovable, parentDir, tailPath } from '../types';
 
 interface ExecuteReviewModalProps {
     isOpen: boolean;
@@ -100,7 +100,7 @@ export function ExecuteReviewModal({ isOpen, files, duplicateTargets, onClose, o
                     <ul className="space-y-1 max-h-60 overflow-y-auto">
                         {summary.roots.map(([dir, n]) => (
                             <li key={dir} className="flex items-center justify-between gap-4 text-sm font-mono px-3 py-1.5 rounded bg-gray-800/40">
-                                <span className="truncate text-gray-300" title={dir}>{dir}</span>
+                                <span className="truncate text-gray-300" title={dir}>{tailPath(dir, 3)}</span>
                                 <span className="shrink-0 text-gray-500">{n}</span>
                             </li>
                         ))}

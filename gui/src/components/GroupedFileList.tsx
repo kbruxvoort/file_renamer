@@ -6,7 +6,7 @@ import {
     Edit2, Trash2, ArrowRight, Replace
 } from 'lucide-react';
 import { clsx } from 'clsx';
-import { type FileItem, type FileStatus, fileStatus, parentDir, baseName } from '../types';
+import { type FileItem, type FileStatus, fileStatus, parentDir, baseName, tailPath } from '../types';
 
 export type FileFilter = 'all' | FileStatus;
 
@@ -153,7 +153,7 @@ function ContentGroup({ group, files, duplicateTargets, onRowClick, onRemove, on
                                     {groupFiles.length} item{groupFiles.length !== 1 ? 's' : ''}
                                 </span>
                             </span>
-                            <span className="block text-xs text-gray-500 font-mono truncate max-w-lg">{groupSubtitle}</span>
+                            <span className="block text-xs text-gray-500 font-mono truncate max-w-lg" title={groupSubtitle}>{group.isContentGroup ? groupSubtitle : tailPath(groupSubtitle, 3)}</span>
                         </span>
                     </button>
                 </div>
@@ -232,7 +232,7 @@ function FileRow({ file, isDuplicate, onOpen, onRemove, onToggle }: {
             {/* Old Name */}
             <button className="flex-1 min-w-0 text-left" onClick={onOpen} title={file.original_path}>
                 <div className="text-sm text-gray-300 font-medium truncate">{file.filename}</div>
-                <div className="text-[11px] text-gray-500 font-mono truncate">{parentDir(file.original_path)}</div>
+                <div className="text-[11px] text-gray-500 font-mono truncate">{tailPath(parentDir(file.original_path), 2)}</div>
             </button>
 
             <div className="text-gray-600 flex-none"><ArrowRight size={16} /></div>
@@ -244,7 +244,7 @@ function FileRow({ file, isDuplicate, onOpen, onRemove, onToggle }: {
                         <div className={clsx("text-sm font-medium truncate font-mono", status === 'review' ? "text-yellow-200" : "text-green-300")}>
                             {baseName(file.proposed_path)}
                         </div>
-                        <div className="text-[11px] text-gray-500 font-mono truncate">{destDir}</div>
+                        <div className="text-[11px] text-gray-500 font-mono truncate">{destDir && tailPath(destDir, 3)}</div>
                         {collides && (
                             <div className="flex items-center gap-1 text-[11px] text-yellow-400">
                                 <AlertTriangle size={11} />

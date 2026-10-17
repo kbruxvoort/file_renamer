@@ -129,3 +129,14 @@ def test_backslash_template_components_are_cleaned(renamer):
 
 def test_template_without_ext_is_rejected():
     assert validate_template("{title} ({year})") is not None
+
+
+def test_lookup_errors_are_readable():
+    import httpx
+    from src.renamer import describe_lookup_error
+    request = httpx.Request("GET", "https://www.googleapis.com/books/v1/volumes?q=x")
+    rate_limited = httpx.HTTPStatusError("429", request=request, response=httpx.Response(429, request=request))
+
+    message = describe_lookup_error(rate_limited, "book")
+
+    assert "Google Books" in message and "http" not in message.lower()

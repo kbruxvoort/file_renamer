@@ -4,7 +4,7 @@ import { History, RotateCcw, ArrowRight, Loader2 } from 'lucide-react';
 import { Modal } from './Modal';
 import { buttonStyles } from './buttonStyles';
 import { getHistory, undoBatch, type HistoryBatch, type UndoResult } from '../api';
-import { baseName } from '../types';
+import { baseName, tailPath } from '../types';
 import { toast } from './toast';
 
 interface HistoryModalProps {
@@ -117,9 +117,9 @@ export function HistoryModal({ isOpen, onClose, onUndone }: HistoryModalProps) {
                             <ul className="space-y-1">
                                 {selected.operations.map(op => (
                                     <li key={op.dest} className="p-2 rounded bg-gray-800/40 text-xs font-mono">
-                                        <div className="text-gray-400 truncate" title={op.dest}>{op.dest}</div>
+                                        <div className="text-gray-400 truncate" title={op.dest}>{tailPath(op.dest, 4)}</div>
                                         <div className="flex items-center gap-1 text-green-400 truncate" title={op.src}>
-                                            <ArrowRight size={12} className="shrink-0" /> {op.src}
+                                            <ArrowRight size={12} className="shrink-0" /> {tailPath(op.src, 4)}
                                         </div>
                                     </li>
                                 ))}

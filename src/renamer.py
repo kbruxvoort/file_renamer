@@ -4,6 +4,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, Optional, Any
 
+import httpx
+
 from src.api_clients.tmdb import tmdb_client
 from src.api_clients.books import books_client
 from src.api_clients.itunes import itunes_client
@@ -30,6 +32,26 @@ RELEASE_TAG_PATTERN = re.compile(
 def _clean_episode_title(raw: str) -> Optional[str]:
     title = RELEASE_TAG_PATTERN.sub('', raw.replace('.', ' ')).strip(' -_')
     return title or None
+
+
+PROVIDERS = {'movie': 'TMDB', 'tv': 'TMDB', 'book': 'Google Books', 'audiobook': 'iTunes'}
+
+
+def describe_lookup_error(e: Exception, media_type: Optional[str]) -> str:
+    """A short, user-facing explanation of a failed metadata lookup."""
+    provider = PROVIDERS.get(media_type or '', 'The metadata service')
+    if isinstance(e, MissingApiKeyError):
+        return str(e)
+    if isinstance(e, httpx.HTTPStatusError):
+        status = e.response.status_code
+        if status == 429:
+            return f"{provider} is limiting requests right now, so some files weren't matched. Rescan in a minute."
+        if status == 401:
+            return f"{provider} rejected the API key. Check it in Settings."
+        return f"{provider} returned an error (HTTP {status}), so some files weren't matched."
+    if isinstance(e, httpx.TransportError):
+        return f"Couldn't reach {provider}. Check your internet connection and rescan."
+    return f"{provider} lookup failed: {e}"
 
 
 class TemplateError(ValueError):
@@ -357,7 +379,7 @@ class Renamer:
         except Exception as e:
             logger.warning(f"Metadata lookup failed for '{parsed_info.get('title')}' ({parsed_info.get('type')}): {e}")
             if errors is not None:
-                errors.append(str(e) if isinstance(e, MissingApiKeyError) else f"{parsed_info.get('type', 'metadata').title()} lookup failed: {e}")
+                errors.append(describe_lookup_error(e, parsed_info.get('type')))
 
         return candidates
 

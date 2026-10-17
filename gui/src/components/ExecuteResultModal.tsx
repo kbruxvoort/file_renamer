@@ -2,7 +2,7 @@ import { CheckCircle, AlertTriangle } from 'lucide-react';
 import { Modal } from './Modal';
 import { buttonStyles } from './buttonStyles';
 import type { ExecuteResult } from '../api';
-import { baseName } from '../types';
+import { baseName, tailPath } from '../types';
 
 interface ExecuteResultModalProps {
     result: ExecuteResult | null;
@@ -51,7 +51,7 @@ export function ExecuteResultModal({ result, onClose }: ExecuteResultModalProps)
                             {mainMoves.map(m => (
                                 <li key={m.src} className="text-sm px-3 py-1.5 rounded bg-gray-800/40">
                                     <div className="text-gray-400 truncate" title={m.src}>{baseName(m.src)}</div>
-                                    <div className="font-mono text-green-300 text-xs truncate" title={m.dest}>{m.dest}</div>
+                                    <div className="font-mono text-green-300 text-xs truncate" title={m.dest}>{tailPath(m.dest, 4)}</div>
                                 </li>
                             ))}
                         </ul>

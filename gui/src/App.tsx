@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { clsx } from 'clsx';
 import { FilePicker } from './components/FilePicker';
-import { type FileItem, fileStatus, isMovable } from './types';
+import { type FileItem, fileStatus, isMovable, tailPath } from './types';
 import { GroupedFileList, type FileFilter } from './components/GroupedFileList';
 import { MatchSelectionModal } from './components/MatchSelectionModal';
 import { SettingsPage } from './components/SettingsPage';
@@ -810,7 +810,7 @@ function App() {
                   <div className="flex items-center gap-4 min-w-0">
                     <h2 className="text-xl font-bold shrink-0">Scan Results</h2>
                     <div className="h-6 w-px bg-gray-700 block shrink-0"></div>
-                    <div className="text-sm text-gray-400 font-mono truncate" title={sourcePath || undefined}>{sourcePath}</div>
+                    <div className="text-sm text-gray-400 font-mono truncate" title={sourcePath || undefined}>{sourcePath && tailPath(sourcePath, 3)}</div>
                   </div>
                   <div className="flex gap-2 shrink-0">
                     <button
