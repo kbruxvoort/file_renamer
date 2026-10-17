@@ -101,12 +101,19 @@ class Config:
         """Every folder files can be moved into (per-type folders and DEST_DIR)."""
         return [self.library_dir(t) for t in MEDIA_TYPES] + [self.DEST_DIR]
 
+    def standard_user_dirs(self) -> list:
+        home = Path.home()
+        return [home / name for name in ("Downloads", "Desktop", "Documents", "Videos", "Music", "Pictures")]
+
     def protected_dirs(self) -> list:
         """Folders cleanup must never delete: the source and library folders,
         and the home folder with its standard subfolders."""
-        home = Path.home()
-        standard = [home / name for name in ("Downloads", "Desktop", "Documents", "Videos", "Music", "Pictures")]
-        return [self.SOURCE_DIR, *self.library_dirs(), home, *standard]
+        return [self.SOURCE_DIR, *self.library_dirs(), Path.home(), *self.standard_user_dirs()]
+
+    def item_container_dirs(self) -> list:
+        """Folders whose direct subfolders are individual items (e.g. a release folder),
+        which may be removed once emptied."""
+        return [self.SOURCE_DIR, *self.library_dirs(), *self.standard_user_dirs()]
 
     def save(self, key: str, value: str):
         self.file_config[key] = value

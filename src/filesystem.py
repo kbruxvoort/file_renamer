@@ -103,15 +103,39 @@ def find_root(path: Path, roots: Iterable[Optional[Path]]) -> Optional[Path]:
     return max(matches, key=lambda r: len(str(r)), default=None)
 
 
+def _real(path: Path) -> Path:
+    """Absolute path with symlinks/junctions resolved."""
+    return Path(os.path.realpath(path))
+
+
 def is_protected(path: Path, protected: Iterable[Optional[Path]]) -> bool:
-    """True for a drive root, a protected folder, or any folder that contains one."""
+    """True for a drive root, a protected folder, or any folder that contains one.
+    Links are resolved, so a junction pointing at a protected folder counts too."""
     try:
-        resolved = Path(os.path.abspath(path))
+        resolved = _real(path)
     except (OSError, ValueError):
         return True
     if resolved.parent == resolved:
         return True
-    return any(p and is_within(p, resolved) for p in protected)
+    return any(p and is_within(_real(p), resolved) for p in protected)
+
+
+def can_remove_scanned_folder(root: Path, protected: Iterable[Optional[Path]], known_parents: Iterable[Optional[Path]]) -> bool:
+    """
+    Whether a folder the user scanned may be deleted once it's empty.
+
+    Allowed only when it sits directly inside a folder we know holds individual
+    items (the source folder, a library folder, Downloads, ...), like a release
+    folder "Downloads/Show.S01". Anything else, such as a long-lived inbox
+    "D:/Torrents/Complete", is kept. Protected folders are never removed.
+    """
+    if is_protected(root, protected):
+        return False
+    try:
+        parent = _real(root).parent
+    except (OSError, ValueError):
+        return False
+    return any(k and is_same_path(parent, _real(k)) for k in known_parents)
 
 
 def clean_empty_dirs(path: Path, root_path: Optional[Path], remove_root: bool = False):
