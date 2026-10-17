@@ -475,7 +475,7 @@ async def scan_files(request: ScanRequest):
     )
 
 
-def _move_with_sidecars(original: Path, target_main: Path, cleanup_roots: List[Path]) -> List[Dict[str, Any]]:
+def _move_with_sidecars(original: Path, target_main: Path, cleanup_roots: List[Path], removable_roots: List[Path]) -> List[Dict[str, Any]]:
     """Moves a file and its sidecars (subtitles, nfo, ...). Returns the moves made."""
     moved = []
 
@@ -498,9 +498,13 @@ def _move_with_sidecars(original: Path, target_main: Path, cleanup_roots: List[P
         except Exception as e:
             logger.warning(f"Failed to move associated file {assoc}: {e}")
 
-    # 4. Clean up now-empty source folders, but never above the scanned folder
+    # 4. Clean up now-empty source folders, never above the scanned folder. The scanned
+    # folder itself also goes once empty when it's a release-style folder (see
+    # can_remove_scanned_folder)
     source_root = filesystem.find_root(original.parent, cleanup_roots)
-    filesystem.clean_empty_dirs(original.parent, root_path=source_root)
+    if source_root is not None:
+        remove_root = any(filesystem.is_same_path(source_root, r) for r in removable_roots)
+        filesystem.clean_empty_dirs(original.parent, root_path=source_root, remove_root=remove_root)
     return moved
 
 
@@ -514,6 +518,8 @@ async def execute_moves(request: ExecuteRequest):
     cleanup_roots = [Path(p) for p in (request.source_roots or []) if Path(p).is_dir()]
     if config.SOURCE_DIR:
         cleanup_roots.append(config.SOURCE_DIR)
+    protected, containers = config.protected_dirs(), config.item_container_dirs()
+    removable_roots = [r for r in cleanup_roots if filesystem.can_remove_scanned_folder(r, protected, containers)]
 
     for file_info in request.files:
         try:
@@ -540,7 +546,7 @@ async def execute_moves(request: ExecuteRequest):
                 skipped.append({"file": str(original), "reason": "Already named and in place"})
                 continue
 
-            moved.extend(await asyncio.to_thread(_move_with_sidecars, original, target_main, cleanup_roots))
+            moved.extend(await asyncio.to_thread(_move_with_sidecars, original, target_main, cleanup_roots, removable_roots))
 
         except Exception as e:
             logger.error(f"Error executing move for {file_info.get('original_path')}: {e}", exc_info=True)

@@ -1,5 +1,5 @@
+import os
 import pytest
-import shutil
 from pathlib import Path
 from src import filesystem
 
@@ -125,3 +125,50 @@ def test_clean_empty_dirs_never_deletes_root(temp_dir):
     filesystem.clean_empty_dirs(root, root_path=root)
 
     assert root.exists()
+
+
+# ---------- removing a scanned folder ----------
+
+def test_clean_empty_dirs_removes_root_only_when_allowed(temp_dir):
+    root = temp_dir / "Show.S01"
+    nested = root / "Season 1"
+    nested.mkdir(parents=True)
+
+    filesystem.clean_empty_dirs(nested, root_path=root, remove_root=True)
+
+    assert not root.exists()
+    assert temp_dir.exists()
+
+def test_is_protected_covers_ancestors_and_drive_root(temp_dir):
+    protected = [temp_dir / "home" / "Downloads"]
+    assert filesystem.is_protected(temp_dir / "home" / "Downloads", protected)
+    assert filesystem.is_protected(temp_dir / "home", protected)          # contains a protected folder
+    assert filesystem.is_protected(Path(temp_dir.anchor), protected)        # drive root
+    assert not filesystem.is_protected(temp_dir / "home" / "Downloads" / "Show.S01", protected)
+    assert not filesystem.is_protected(temp_dir / "elsewhere", [None, *protected])
+
+def test_is_protected_resolves_links(temp_dir):
+    target = temp_dir / "Downloads"
+    target.mkdir()
+    link = temp_dir / "Inbox"
+    try:
+        os.symlink(target, link, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        # Windows without symlink rights: a junction needs no special privilege
+        try:
+            import _winapi
+            _winapi.CreateJunction(str(target), str(link))
+        except (ImportError, OSError):
+            pytest.skip("neither symlinks nor junctions available")
+    assert filesystem.is_protected(link, [target])
+
+def test_can_remove_scanned_folder_requires_known_parent(temp_dir):
+    downloads = temp_dir / "Downloads"
+    release = downloads / "Show.S01"
+    release.mkdir(parents=True)
+    inbox = temp_dir / "Torrents" / "Complete"
+    inbox.mkdir(parents=True)
+
+    assert filesystem.can_remove_scanned_folder(release, [downloads], [downloads])
+    assert not filesystem.can_remove_scanned_folder(downloads, [downloads], [downloads])
+    assert not filesystem.can_remove_scanned_folder(inbox, [downloads], [downloads])
