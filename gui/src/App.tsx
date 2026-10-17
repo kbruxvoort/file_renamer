@@ -274,15 +274,23 @@ function App() {
     setFiles(prev => prev.map(f => f.original_path === path ? { ...f, ...patch } : f));
   }, []);
 
-  /** Re-previews a file's destination for a candidate and stores it. */
+  /**
+   * Re-previews a file's destination for a candidate. The result is only stored if that
+   * candidate is still the file's selection when it arrives: a slow preview for an
+   * earlier pick (or one the user cancelled) must not overwrite the path that gets moved.
+   */
   const refreshPreview = useCallback(async (path: string, candidate: FileCandidate) => {
     try {
       const preview = await previewRename(path, candidate);
-      patchFile(path, { proposed_path: preview.proposed_path, conflict: preview.conflict });
+      setFiles(prev => prev.map(f =>
+        f.original_path === path && f.candidates[f.selected_index] === candidate
+          ? { ...f, proposed_path: preview.proposed_path, conflict: preview.conflict }
+          : f
+      ));
     } catch (e) {
-      console.error("Failed to preview rename", e);
+      toast(`Couldn't preview the new name: ${e instanceof Error ? e.message : e}`, 'error');
     }
-  }, [patchFile]);
+  }, []);
 
   function handleRemoveFile(index: number) {
     setFiles(prev => prev.filter((_, i) => i !== index));
@@ -322,14 +330,14 @@ function App() {
   function handleCandidateSelect(candidateIndex: number) {
     if (!focusFile) return;
     const candidate = focusFile.candidates[candidateIndex];
-    patchFile(focusFile.original_path, { selected_index: candidateIndex });
+    patchFile(focusFile.original_path, { selected_index: candidateIndex, proposed_path: null, conflict: false });
     if (candidate) refreshPreview(focusFile.original_path, candidate);
   }
 
   /** Results of a manual search replace the list; nothing is confirmed until the user picks. */
   function handleCandidatesUpdate(newCandidates: FileCandidate[]) {
     if (!focusFile) return;
-    patchFile(focusFile.original_path, { candidates: newCandidates, selected_index: 0, confirmed: false });
+    patchFile(focusFile.original_path, { candidates: newCandidates, selected_index: 0, confirmed: false, proposed_path: null, conflict: false });
     if (newCandidates.length > 0) refreshPreview(focusFile.original_path, newCandidates[0]);
   }
 
@@ -345,7 +353,7 @@ function App() {
       candidates = [...candidates, base];
       idx = candidates.length - 1;
     }
-    return { ...target, candidates, selected_index: idx, confirmed: true };
+    return { ...target, candidates, selected_index: idx, confirmed: true, proposed_path: null, conflict: false };
   }
 
   /**

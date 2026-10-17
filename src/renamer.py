@@ -32,6 +32,10 @@ def _clean_episode_title(raw: str) -> Optional[str]:
     return title or None
 
 
+class TemplateError(ValueError):
+    """The configured naming template can't produce a path for this file."""
+
+
 def _max_year() -> int:
     """Latest plausible release year (next year, for early releases)."""
     return datetime.now().year + 1
@@ -54,6 +58,7 @@ def _clean_value(value: Any) -> str:
 def _clean_component(part: str) -> str:
     """Tidies a formatted path component: drops empty brackets, collapses spaces,
     and strips the trailing spaces/dots/dashes Windows can't handle."""
+    part = ILLEGAL_PATH_CHARS.sub('', part.replace(':', ''))
     part = re.sub(r'\(\s*\)|\[\s*\]', '', part)
     part = re.sub(r'\s{2,}', ' ', part)
     return part.strip().rstrip(' .-').strip()
@@ -377,9 +382,10 @@ class Renamer:
         try:
             return render_template(template, metadata, ext)
         except (KeyError, ValueError, IndexError, AttributeError) as e:
-            # Bad or half-typed template (unknown key, unbalanced braces, ...)
+            # Bad template (unknown key, unbalanced braces, no {ext}, ...). Never fall back to
+            # the bare filename: that would drop the file into the library root.
             logger.error(f"Template error in '{template}': {e!r}")
-            return Path(current_path.name)
+            raise TemplateError(f"The {ftype} naming template is invalid: {e}") from e
 
 
 def render_template(template: str, metadata: Dict[str, Any], ext: str) -> Path:
@@ -387,7 +393,7 @@ def render_template(template: str, metadata: Dict[str, Any], ext: str) -> Path:
     Fills a naming template with sanitized metadata values.
     Raises KeyError/ValueError/IndexError for invalid templates.
     """
-    context = {k: _clean_value(v) for k, v in metadata.items()}
+    context = {k: _clean_value(v) for k, v in metadata.items() if v is None or isinstance(v, (str, int, float))}
 
     # Defaults for missing *or empty* values (a candidate may carry year=None)
     defaults = {'title': 'Unknown', 'year': '', 'resolution': '', 'group': '', 'author': 'Unknown Author'}
@@ -411,7 +417,7 @@ def render_template(template: str, metadata: Dict[str, Any], ext: str) -> Path:
 
     # Clean each folder/file component separately. Drop empty and '.'/'..'
     # components so a template can never escape the library folder.
-    parts = [p for p in re.split(r'[\/]+', rel)]
+    parts = re.split(r'[\\/]+', rel)
     cleaned = []
     for i, part in enumerate(parts):
         is_last = i == len(parts) - 1
@@ -425,6 +431,8 @@ def render_template(template: str, metadata: Dict[str, Any], ext: str) -> Path:
 
     if not cleaned:
         raise ValueError(f"Template '{template}' produced an empty path")
+    if ext and not cleaned[-1].endswith(ext):
+        raise ValueError("Template must end with {ext} so files keep their extension")
     return Path(*cleaned)
 
 

@@ -1,7 +1,7 @@
 import logging
 import os
 from pathlib import Path
-from typing import Generator
+from typing import Callable, Generator, Optional
 
 from src.config import config
 
@@ -14,15 +14,18 @@ ALL_EXTENSIONS = VIDEO_EXTENSIONS | AUDIO_EXTENSIONS | BOOK_EXTENSIONS
 logger = logging.getLogger(__name__)
 
 
-def scan_directory(root_path: Path, min_video_size_mb: float) -> Generator[Path, None, None]:
+def scan_directory(root_path: Path, min_video_size_mb: float, should_stop: Optional[Callable[[], bool]] = None) -> Generator[Path, None, None]:
     """
     Recursively scans the directory for media files.
     Folders or files that can't be read (permissions, broken links) are skipped.
+    `should_stop` is checked per folder so a long walk can be cancelled.
     """
     def on_error(err: OSError):
         logger.warning(f"Skipping unreadable path during scan: {err}")
 
     for dirpath, _dirnames, filenames in os.walk(root_path, onerror=on_error):
+        if should_stop and should_stop():
+            return
         for name in filenames:
             path = Path(dirpath) / name
             suffix = path.suffix.lower()

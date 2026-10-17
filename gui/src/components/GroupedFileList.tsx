@@ -252,6 +252,8 @@ function FileRow({ file, isDuplicate, onOpen, onRemove, onToggle }: {
                             </div>
                         )}
                     </>
+                ) : candidate ? (
+                    <span className="text-gray-500 text-sm">Working out new name...</span>
                 ) : <span className="text-gray-600 text-sm">Not moved without a match</span>}
             </button>
 

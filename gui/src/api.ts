@@ -99,14 +99,22 @@ let apiToken: string | null = null;
 async function getApiBase(): Promise<string> {
     if (apiBaseUrl) return apiBaseUrl;
 
+    let baseUrl = "http://127.0.0.1:8742";
     try {
         const port = await invoke<number>("get_api_port");
-        apiBaseUrl = `http://127.0.0.1:${port}`;
-        apiToken = await invoke<string>("get_api_token");
+        baseUrl = `http://127.0.0.1:${port}`;
     } catch (e) {
         console.warn("Failed to get dynamic port, falling back to default:", e);
-        apiBaseUrl = "http://127.0.0.1:8742";
     }
+
+    // Separate from the port lookup: a failure here must not send requests to the wrong port
+    try {
+        apiToken = await invoke<string>("get_api_token");
+    } catch (e) {
+        console.warn("Failed to get API token; requests will be refused by the backend:", e);
+    }
+
+    apiBaseUrl = baseUrl;
     return apiBaseUrl;
 }
 

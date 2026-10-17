@@ -21,8 +21,8 @@ logger = logging.getLogger(__name__)
 
 try:
     from src.scanner import scan_directory, VIDEO_EXTENSIONS, ALL_EXTENSIONS
-    from src.renamer import renamer, validate_template, render_template
-    from src.config import config, DEFAULT_TEMPLATES
+    from src.renamer import renamer, validate_template, render_template, TemplateError
+    from src.config import config, DEFAULT_TEMPLATES, MEDIA_TYPES
     from src.undo import undo_manager
     from src.api_clients.tmdb import tmdb_client
     from src import filesystem
@@ -49,16 +49,22 @@ app.add_middleware(
 
 # Per-launch secret shared with the Tauri shell. When set, every request except the
 # health check must carry it, so other local programs and web pages can't drive the API.
+# Without a token every request is refused, unless running unauthenticated was asked for
+# explicitly (local development / tests) with SORTIFY_ALLOW_NO_AUTH=1.
 API_TOKEN: Optional[str] = os.environ.get("SORTIFY_API_TOKEN") or None
+ALLOW_NO_AUTH = os.environ.get("SORTIFY_ALLOW_NO_AUTH") == "1"
 OPEN_PATHS = {"/health"}
 
 
 @app.middleware("http")
 async def require_token(request: Request, call_next):
-    if API_TOKEN and request.method != "OPTIONS" and request.url.path not in OPEN_PATHS:
-        supplied = request.headers.get("x-sortify-token", "")
-        if not secrets.compare_digest(supplied, API_TOKEN):
-            return JSONResponse(status_code=401, content={"detail": "Unauthorized"})
+    if request.method != "OPTIONS" and request.url.path not in OPEN_PATHS:
+        if API_TOKEN:
+            supplied = request.headers.get("x-sortify-token", "")
+            if not secrets.compare_digest(supplied, API_TOKEN):
+                return JSONResponse(status_code=401, content={"detail": "Unauthorized"})
+        elif not ALLOW_NO_AUTH:
+            return JSONResponse(status_code=401, content={"detail": "Server started without an API token"})
     return await call_next(request)
 
 # ============== Models ==============
@@ -121,18 +127,11 @@ class TemplatePreviewRequest(BaseModel):
 
 # ============== Helpers ==============
 
-MEDIA_TYPES = ('movie', 'tv', 'book', 'audiobook')
-
 # Generic download folders hold unrelated files, so they never share TV context
 MIXED_DIR_NAMES = {'downloads', 'desktop', 'documents', 'unsorted', 'incoming'}
 
 # How many files per folder are processed one at a time to establish TV context
 MAX_PRIMING_FILES = 3
-
-
-def get_base_dir(ftype: Optional[str]) -> Path:
-    """Library folder for a media type."""
-    return config.library_dir(ftype)
 
 
 def candidate_to_model(c: Dict[str, Any]) -> FileCandidate:
@@ -159,8 +158,9 @@ def candidate_to_model(c: Dict[str, Any]) -> FileCandidate:
 
 
 def build_target(original: Path, metadata: Dict[str, Any]) -> Path:
-    """Absolute destination for a file given its resolved metadata."""
-    return get_base_dir(metadata.get('type')) / renamer.propose_new_path(original, metadata)
+    """Absolute destination for a file given its resolved metadata.
+    Raises TemplateError if the naming template can't be applied."""
+    return config.library_dir(metadata.get('type')) / renamer.propose_new_path(original, metadata)
 
 
 async def resolve_metadata(original: Path, candidate: Optional[Dict[str, Any]]) -> Dict[str, Any]:
@@ -194,7 +194,7 @@ def is_valid_client_target(original: Path, target: Path, ftype: Optional[str]) -
         ftype in MEDIA_TYPES
         and target.is_absolute()
         and target.suffix.lower() == original.suffix.lower()
-        and filesystem.is_within(target, get_base_dir(ftype))
+        and filesystem.is_within(target, config.library_dir(ftype))
     )
 
 
@@ -282,7 +282,11 @@ async def scan_files(request: ScanRequest):
                 if path.suffix.lower() in ALL_EXTENSIONS:
                     targets.append(path)
             else:
-                targets.extend(scan_directory(path, min_video_size_mb=float(request.min_size_mb)))
+                targets.extend(scan_directory(
+                    path,
+                    min_video_size_mb=float(request.min_size_mb),
+                    should_stop=lambda: job["cancelled"],
+                ))
         return targets
 
     # Walking a large or network folder is slow, blocking I/O: keep it off the event
@@ -394,9 +398,12 @@ async def scan_files(request: ScanRequest):
                 if candidates_raw:
                     selected_metadata = {**metadata, **candidates_raw[0]}
                     ftype = selected_metadata.get('type')
-                    target = build_target(file_path, selected_metadata)
-                    proposed_path = str(target)
-                    conflict = target.exists()
+                    try:
+                        target = build_target(file_path, selected_metadata)
+                        proposed_path = str(target)
+                        conflict = target.exists() and not filesystem.is_same_path(target, file_path)
+                    except TemplateError as e:
+                        lookup_errors.append(str(e))
 
                 return ScannedFile(
                     original_path=str(file_path),
@@ -468,8 +475,37 @@ async def scan_files(request: ScanRequest):
     )
 
 
+def _move_with_sidecars(original: Path, target_main: Path, cleanup_roots: List[Path]) -> List[Dict[str, Any]]:
+    """Moves a file and its sidecars (subtitles, nfo, ...). Returns the moves made."""
+    moved = []
+
+    # 1. Identify Associated Files (BEFORE moving the main file)
+    associated_files = filesystem.find_associated_files(original)
+
+    # 2. Move Main File
+    final_target = filesystem.move_file(original, target_main)
+    moved.append({"src": str(original), "dest": str(final_target)})
+
+    # 3. Move Associated Files. They follow the main file's new name but keep their own
+    # suffix, e.g. "Movie.en.srt" -> "New Name (2020).en.srt"
+    for assoc in associated_files:
+        try:
+            suffix_part = assoc.name[len(original.stem):]  # ".en.srt"
+            target_assoc = final_target.parent / (final_target.stem + suffix_part)
+            # Record where it actually landed (may differ after a collision rename)
+            final_assoc = filesystem.move_file(assoc, target_assoc)
+            moved.append({"src": str(assoc), "dest": str(final_assoc), "associated": True})
+        except Exception as e:
+            logger.warning(f"Failed to move associated file {assoc}: {e}")
+
+    # 4. Clean up now-empty source folders, but never above the scanned folder
+    source_root = filesystem.find_root(original.parent, cleanup_roots)
+    filesystem.clean_empty_dirs(original.parent, root_path=source_root)
+    return moved
+
+
 @app.post("/execute")
-def execute_moves(request: ExecuteRequest):
+async def execute_moves(request: ExecuteRequest):
     moved = []
     errors = []
     skipped = []
@@ -493,47 +529,18 @@ def execute_moves(request: ExecuteRequest):
                 continue
 
             # Use the exact path the user previewed when it's safe to; otherwise rebuild it
+            # the same way /preview_rename does (including the episode-title lookup)
             client_target = Path(file_info['proposed_path']) if file_info.get('proposed_path') else None
             if client_target and is_valid_client_target(original, client_target, candidate.get('type')):
                 target_main = client_target
             else:
-                metadata = renamer.parse_filename(original)
-                metadata.update(candidate)
-                target_main = build_target(original, metadata)
+                target_main = build_target(original, await resolve_metadata(original, candidate))
 
-            # 1. Identify Associated Files (BEFORE moving the main file)
-            associated_files = filesystem.find_associated_files(original)
+            if filesystem.is_same_path(target_main, original):
+                skipped.append({"file": str(original), "reason": "Already named and in place"})
+                continue
 
-            # 2. Move Main File
-            final_target = filesystem.move_file(original, target_main)
-
-            moved.append({
-                "src": str(original),
-                "dest": str(final_target)
-            })
-
-            # 3. Move Associated Files
-            # They follow the main file's new name but keep their own suffix
-            # e.g. "Movie.en.srt" -> "New Name (2020).en.srt"
-            for assoc in associated_files:
-                try:
-                    suffix_part = assoc.name[len(original.stem):] # ".en.srt"
-                    target_assoc = final_target.parent / (final_target.stem + suffix_part)
-
-                    # Record where it actually landed (may differ after a collision rename)
-                    final_assoc = filesystem.move_file(assoc, target_assoc)
-
-                    moved.append({
-                        "src": str(assoc),
-                        "dest": str(final_assoc),
-                        "associated": True
-                    })
-                except Exception as e:
-                    logger.warning(f"Failed to move associated file {assoc}: {e}")
-
-            # 4. Clean up now-empty source folders, but never above the scanned folder
-            source_root = filesystem.find_root(original.parent, cleanup_roots)
-            filesystem.clean_empty_dirs(original.parent, root_path=source_root)
+            moved.extend(await asyncio.to_thread(_move_with_sidecars, original, target_main, cleanup_roots))
 
         except Exception as e:
             logger.error(f"Error executing move for {file_info.get('original_path')}: {e}", exc_info=True)
@@ -582,8 +589,14 @@ async def search(request: SearchRequest):
 async def preview_rename(request: PreviewRenameRequest):
     original = Path(request.original_path)
     metadata = await resolve_metadata(original, request.selected_candidate)
-    target = build_target(original, metadata)
-    return {"proposed_path": str(target), "conflict": target.exists()}
+    try:
+        target = build_target(original, metadata)
+    except TemplateError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {
+        "proposed_path": str(target),
+        "conflict": target.exists() and not filesystem.is_same_path(target, original),
+    }
 
 
 @app.post("/template_preview")
@@ -599,7 +612,7 @@ async def template_preview(request: TemplatePreviewRequest):
     error = validate_template(request.template)
     if error:
         return {"path": None, "error": error}
-    return {"path": str(get_base_dir(request.type) / render_template(request.template, metadata, ext)), "error": None}
+    return {"path": str(config.library_dir(request.type) / render_template(request.template, metadata, ext)), "error": None}
 
 
 @app.get("/history")
@@ -720,7 +733,8 @@ def start_server():
     args, _unknown = parser.parse_known_args()
     port = args.port
 
-    logger.info(f"Starting API server on port {port} (token auth {'on' if API_TOKEN else 'off'})")
+    auth_mode = "token" if API_TOKEN else ("OFF (SORTIFY_ALLOW_NO_AUTH)" if ALLOW_NO_AUTH else "refusing all requests: no token")
+    logger.info(f"Starting API server on port {port} (auth: {auth_mode})")
 
     # Process Management: exit when the app stops sending heartbeats
     def monitor_heartbeat():

@@ -4,7 +4,7 @@ from unittest.mock import patch
 
 import pytest
 
-from src.renamer import Renamer, validate_template
+from src.renamer import Renamer, TemplateError, validate_template
 
 
 @pytest.fixture
@@ -69,10 +69,10 @@ def test_template_cannot_escape_library(renamer):
     assert ".." not in rel.parts
 
 
-def test_malformed_template_falls_back_instead_of_raising(renamer):
+def test_malformed_template_raises_instead_of_dumping_in_library_root(renamer):
     with patch('src.renamer.config.file_config', {"MOVIE_TEMPLATE": "{title"}):
-        rel = renamer.propose_new_path(Path("a.mkv"), {"type": "movie", "title": "X"})
-    assert rel == Path("a.mkv")
+        with pytest.raises(TemplateError):
+            renamer.propose_new_path(Path("a.mkv"), {"type": "movie", "title": "X"})
 
 
 @pytest.mark.parametrize("template, ok", [
@@ -112,3 +112,20 @@ def test_tv_candidates_use_show_premiere_year(renamer):
 
     assert cands[0]["year"] == 2008
     assert cands[0]["episode_title"] == "Seven Thirty-Seven"
+
+
+@pytest.mark.parametrize("template", [r"..\..\{title}{ext}", r"C:\x\{title}{ext}", "../{title}{ext}"])
+def test_backslash_and_drive_templates_stay_inside_library(renamer, template):
+    with patch('src.renamer.config.file_config', {"MOVIE_TEMPLATE": template}):
+        rel = renamer.propose_new_path(Path("a.mkv"), {"type": "movie", "title": "X"})
+    assert ".." not in rel.parts and not rel.drive and not rel.is_absolute()
+
+
+def test_backslash_template_components_are_cleaned(renamer):
+    with patch('src.renamer.config.file_config', {"MOVIE_TEMPLATE": r"{title} ({year})\{title} ({year}){ext}"}):
+        rel = renamer.propose_new_path(Path("a.mkv"), {"type": "movie", "title": "Mr.", "year": None})
+    assert rel == Path("Mr") / "Mr.mkv"
+
+
+def test_template_without_ext_is_rejected():
+    assert validate_template("{title} ({year})") is not None

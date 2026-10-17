@@ -8,6 +8,8 @@ load_dotenv()
 
 CONFIG_PATH = Path.home() / ".renamer_config.json"
 
+MEDIA_TYPES = ("movie", "tv", "book", "audiobook")
+
 DEFAULT_TEMPLATES = {
     "MOVIE_TEMPLATE": "{title} ({year})/{title} ({year}){ext}",
     "TV_TEMPLATE": "{title}/Season {season}/{title} - s{season}e{episode}{ext}",
@@ -94,6 +96,10 @@ class Config:
             'book': self.BOOK_DIR,
             'audiobook': self.AUDIOBOOK_DIR,
         }.get(media_type, self.DEST_DIR)
+
+    def library_dirs(self) -> list:
+        """Every folder files can be moved into (per-type folders and DEST_DIR)."""
+        return [self.library_dir(t) for t in MEDIA_TYPES] + [self.DEST_DIR]
 
     def save(self, key: str, value: str):
         self.file_config[key] = value

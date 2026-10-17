@@ -92,6 +92,11 @@ def is_within(path: Path, root: Path) -> bool:
     return path == root or root in path.parents
 
 
+def is_same_path(a: Path, b: Path) -> bool:
+    """True if both point at the same location (case-insensitive on Windows)."""
+    return os.path.normcase(os.path.abspath(a)) == os.path.normcase(os.path.abspath(b))
+
+
 def find_root(path: Path, roots: Iterable[Optional[Path]]) -> Optional[Path]:
     """Returns the deepest root directory that contains `path`, if any."""
     matches = [r for r in roots if r and is_within(path, r)]

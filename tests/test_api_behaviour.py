@@ -209,3 +209,74 @@ def test_rejected_tmdb_key_is_not_saved():
 
     assert response.status_code == 400
     save.assert_not_called()
+
+
+# ---------- Review follow-ups ----------
+
+def test_no_token_and_no_opt_out_refuses_requests():
+    with patch.object(api, "API_TOKEN", None), patch.object(api, "ALLOW_NO_AUTH", False):
+        assert client.get("/history").status_code == 401
+        assert client.get("/health").status_code == 200
+
+
+def test_file_already_in_place_is_not_moved(library):
+    _, dest = library
+    in_place = dest / "Movies" / "Movie (2020)" / "Movie (2020).mkv"
+    in_place.parent.mkdir(parents=True)
+    in_place.write_bytes(b"x")
+
+    data = client.post("/execute", json={"files": [{
+        "original_path": str(in_place),
+        "selected_candidate": {"title": "Movie", "year": 2020, "type": "movie"},
+    }]}).json()
+
+    assert data["moved"] == []
+    assert data["skipped"][0]["reason"] == "Already named and in place"
+    assert in_place.exists()
+
+
+def test_execute_fallback_fetches_episode_title_like_preview(library):
+    source, dest = library
+    episode = source / "Show.S01E05.mkv"
+    episode.write_bytes(b"x")
+    config.file_config["TV_TEMPLATE"] = "{title}/Season {season}/{title} - s{season}e{episode} - {episode_title}{ext}"
+
+    with patch.object(api.tmdb_client, "get_episode_details", AsyncMock(return_value={"name": "Real Title"})):
+        client.post("/execute", json={"files": [{
+            "original_path": str(episode),
+            "selected_candidate": {"title": "Show", "type": "tv", "id": 1},
+        }]})
+
+    assert (dest / "TV" / "Show" / "Season 01" / "Show - s01e05 - Real Title.mkv").exists()
+
+
+def test_invalid_template_never_moves_into_library_root(library):
+    source, dest = library
+    movie = source / "Movie.2020.mkv"
+    movie.write_bytes(b"x")
+    config.file_config["MOVIE_TEMPLATE"] = "{title} ({year})"  # no {ext}
+
+    data = client.post("/execute", json={"files": [{
+        "original_path": str(movie),
+        "selected_candidate": {"title": "Movie", "year": 2020, "type": "movie"},
+    }]}).json()
+
+    assert data["moved"] == [] and len(data["errors"]) == 1
+    assert movie.exists()
+
+
+def test_undo_older_batch_keeps_ops_a_newer_batch_moved_on(library):
+    source, dest = library
+    a, x, y = source / "a.mkv", dest / "x.mkv", dest / "y.mkv"
+    y.write_bytes(b"x")  # a -> x (batch 1), then x -> y (batch 2)
+    undo_manager.record_batch([{"src": str(a), "dest": str(x)}])
+    first = undo_manager.history[0]["batch_id"]
+    undo_manager.record_batch([{"src": str(x), "dest": str(y)}])
+
+    result = client.post("/undo", json={"batch_id": first}).json()
+    assert result["success"] is False
+    assert any(b["batch_id"] == first for b in undo_manager.history)
+
+    client.post("/undo")                      # newer batch: y -> x
+    client.post("/undo", json={"batch_id": first})  # now x -> a
+    assert a.exists()

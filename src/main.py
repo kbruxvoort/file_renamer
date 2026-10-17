@@ -5,7 +5,7 @@ from rich.table import Table
 from rich.prompt import Prompt
 from pathlib import Path
 from src.scanner import scan_directory
-from src.renamer import renamer
+from src.renamer import renamer, TemplateError
 from src.config import config
 from src.undo import undo_manager
 from src import filesystem
@@ -73,7 +73,11 @@ async def run_scan(path: Path, dry_run: bool, interactive: bool, min_size: int):
             continue
 
         # 3. Propose new path
-        new_relative_path = renamer.propose_new_path(file_path, metadata)
+        try:
+            new_relative_path = renamer.propose_new_path(file_path, metadata)
+        except TemplateError as e:
+            table.add_row(file_path.name, f"[red]{e}[/red]", metadata.get('type', 'unknown'))
+            continue
         
         # Construct full new destination path
         new_full_path = config.library_dir(metadata.get('type')) / new_relative_path

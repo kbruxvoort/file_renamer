@@ -71,7 +71,10 @@ class UndoManager:
         failures = []
         remaining_ops = []
 
-        library_roots = [config.MOVIE_DIR, config.TV_DIR, config.BOOK_DIR, config.AUDIOBOOK_DIR, config.DEST_DIR]
+        library_roots = config.library_dirs()
+        # Where newer batches moved files from: a file missing here may just have been moved
+        # on by a later batch, which has to be undone first
+        moved_on_later = {op['src'] for b in self.history[:index] for op in b['operations']}
 
         # Reverse order so associated files and chains unwind cleanly
         for op in reversed(batch['operations']):
@@ -81,8 +84,12 @@ class UndoManager:
             # To undo: move from dest back to src
             try:
                 if not dest.exists():
-                    # Nothing left to restore; retrying won't help, so drop it
-                    failures.append({"file": str(dest), "error": "File is no longer at its new location"})
+                    if str(dest) in moved_on_later:
+                        failures.append({"file": str(dest), "error": "A newer batch moved this file; undo that batch first"})
+                        remaining_ops.insert(0, op)
+                    else:
+                        # Nothing left to restore; retrying won't help, so drop it
+                        failures.append({"file": str(dest), "error": "File is no longer at its new location"})
                     continue
 
                 if src.exists():
