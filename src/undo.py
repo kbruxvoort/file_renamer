@@ -16,13 +16,26 @@ class UndoManager:
         self._load_history()
 
     def _load_history(self):
-        if self.history_file.exists():
-            try:
-                self.history = json.loads(self.history_file.read_text())
-            except Exception:
-                self.history = []
-        else:
+        self.history = []
+        if not self.history_file.exists():
+            return
+        try:
+            self.history = [self._normalize_batch(b) for b in json.loads(self.history_file.read_text())]
+        except Exception:
+            # Keep the unreadable file instead of overwriting it on the next save
+            backup = self.history_file.with_suffix('.corrupt.json')
+            shutil.copy2(self.history_file, backup)
             self.history = []
+
+    @staticmethod
+    def _normalize_batch(batch: Dict[str, Any]) -> Dict[str, Any]:
+        """Older versions recorded moves as {'from', 'to'}; current code uses {'src', 'dest'}."""
+        for op in batch.get('operations', []):
+            if 'src' not in op and 'from' in op:
+                op['src'] = op.pop('from')
+            if 'dest' not in op and 'to' in op:
+                op['dest'] = op.pop('to')
+        return batch
 
     def _save_history(self):
         self.history_file.write_text(json.dumps(self.history, indent=2))
