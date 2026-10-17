@@ -301,7 +301,7 @@ wheels = [
 
 [[package]]
 name = "file-renamer"
-version = "0.1.7"
+version = "0.1.17"
 source = { editable = "." }
 dependencies = [
     { name = "aiohttp" },
